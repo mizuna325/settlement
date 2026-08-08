@@ -1,0 +1,37 @@
+{
+  "name": "demo (spring boot + claude code)",
+  "dockerComposeFile": "../compose.yaml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "vscode",
+  //Stop DB container after disconnect VsCode.
+  "shutdownAction": "stopCompose",
+  "forwardPorts": [
+    8080,
+    5432
+  ],
+  "portsAttributes": {
+    "8080": {
+      "label": "spring boot"
+    },
+    "5432": {
+      "label": "postgres"
+    }
+  },
+  "postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.claude /home/vscode/.m2 && ./mvnw -B dependency:go-offline",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "vscjava.vscode-java-pack",
+        "vmware.vscode-boot-dev-pack",
+        "mtxr.sqltools",
+        "mtxr.sqltools-driver-pg"
+      ],
+      "settings": {
+        "java.configuration.updateBuildConfiguration": "automatic",
+        "editor.formatOnSave": true
+      }
+    }
+  }
+}

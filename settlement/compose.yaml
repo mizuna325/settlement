@@ -1,0 +1,37 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    command: sleep infinity
+    volumes:
+      - .:/workspace:cached
+      - claude-config:/home/vscode/.claude
+      - m2-cache:/home/vscode/.m2
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/settlement
+      SPRING_DATASOURCE_USERNAME: demo
+      SPRING_DATASOURCE_PASSWORD: demo
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: settlement
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d demo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  claude-config:
+  m2-cache:
+  pgdata:
