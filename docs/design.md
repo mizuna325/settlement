@@ -401,16 +401,12 @@ settlement.psp.webhook-event-retention=30d
 </dependency>
 ```
 
-Spring BootのBOM管理外のため、バージョンの明示が必要になる。
-
-`archunit-junit5`(`@AnalyzeClasses` / `@ArchTest`で宣言的に書くためのモジュール)は採用しない。後述のルールは素の`@Test`から`check(classes)`を呼ぶ形で書いており、コアの`archunit`だけで足りる。`archunit-junit5`はJUnit Platformに独自のTestEngineを登録する仕組みであり、JUnitのバージョンに追従する必要が生じるため、必要になるまで持ち込まない。
-
 ### 検証するルール
 
 ```java
 class ArchitectureTest {
 
-    private final JavaClasses classes = new ClassFileImporter()
+    private static final JavaClasses classes = new ClassFileImporter()
         .importPackages("com.example.settlement");
 
     @Test
@@ -440,6 +436,14 @@ class ArchitectureTest {
             .should().resideInAPackage("..order..")
             .check(classes);
     }
+
+    @Test
+    void domainMustNotDependOnFrameworks() {
+        noClasses().that().resideInAPackage("..domain..")
+            .should().dependOnClassesThat().resideInAnyPackage(
+                "org.springframework..", "jakarta.persistence..", "jakarta.validation..")
+            .check(classes);
+    }
 }
 ```
 
@@ -449,6 +453,7 @@ class ArchitectureTest {
 - `shared`が`order`/`payment`のどちらにも依存しない(Shared Kernelとしての`Money`が業務ロジックを持ち込む方向に育たないための歯止め)
 - 各コンテキストの`domain`層が外側の層に依存しない
 - `PaymentOutcomePort`の実装が`order`パッケージ以外に増えない
+- `domain`層がフレームワークに依存しない(永続化アノテーションをドメインモデルに付けない)
 
 ### 方式の選定: ArchUnitのみを採用する
 
