@@ -19,5 +19,5 @@ Voidユースケースを5日間の実装スコープから除外する。Paymen
 ## Consequences
 
 - `VoidAuthorizationUseCase` / `VoidAuthorizationService`、`Authorization`の`VOID_PENDING`/`VOIDED`状態、`PaymentVoided`イベント、PSPスタブの`/void`エンドポイントを設計・実装対象から削除した。
-- 5日間の実装プランはDay4(Capture・Refund)、Day5(正常系/与信拒否/部分Refund/重複Webhookの4シナリオ)に整理された。
+- 5日間の実装プランはDay4(Capture・Refund)、Day5(正常系/与信拒否/売上確定失敗/部分Refund/重複Webhookの5シナリオ)に整理された。
 - 将来、出荷確認など「与信とCaptureの間に実業務トリガーを挟む」設計に変更する場合は、Voidの必要性を再検討する。その際は本ADRをSupersededとし、新しいADRを起票する。
