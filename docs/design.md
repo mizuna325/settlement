@@ -76,7 +76,7 @@ com.example.settlement
 │   │   │                        # SettleOrderUseCase, RefundOrderUseCase
 │   │   └── service              # CreateOrderService（内部でpaymentのUseCaseを直接呼ぶ）
 │   ├── infrastructure
-│   │   ├── persistence          # Spring Data JDBC Repository実装
+│   │   ├── persistence          # 永続化専用モデル + マッパー + Spring Data JDBC Repository実装
 │   │   └── eventing             # PaymentOutcomeAdapter implements PaymentOutcomePort
 │   │                             # （paymentからの結果通知を受けてorderのUseCaseを呼ぶ）
 │   └── presentation
@@ -102,7 +102,7 @@ com.example.settlement
 │   │   │                         #   HandlePspWebhookServiceが与信成功時に直接呼ぶ)
 │   │   └── policy                # RiskCheckPolicy(与信の簡易審査ルール)
 │   ├── infrastructure
-│   │   ├── persistence            # Spring Data JDBC Repository実装(Payment集約丸ごと)
+│   │   ├── persistence            # 永続化専用モデル(Payment集約丸ごと) + マッパー + Repository実装
 │   │   ├── outbox                  # PspDispatchEvent, PspDispatchRelay(@Scheduled)
 │   │   ├── gateway                  # PspClient implements PspDispatchQueuePort の送信部分(RestClient)
 │   │   └── idempotency               # PspIdempotencyKeyJdbcStore, WebhookEventJdbcStore(受信側の冪等性)
@@ -141,6 +141,9 @@ com.example.settlement
 
 - `PaymentStatus`は子エンティティからの導出値ではなく、`payments`テーブルの列として永続化する。滞留中の決済(`*_ING`)を状態列だけで抽出できるようにするため。整合性は`Payment`集約が子エンティティの更新と同時に自ら維持する
 - 状態はすべてJavaのenumとして定義し、遷移の可否はenum自身または集約のメソッドで判定する。文字列比較で分岐させない
+- ドメインモデルにはフレームワークのアノテーションを付けない(§7)。`@Id`や`@MappedCollection`を伴う永続化専用モデルは`infrastructure.persistence`に別途置き、リポジトリ実装が集約との相互変換を担う
+- 楽観ロックのため、集約ルートはアノテーションを持たない`long version`を保持する。`@Version`が付くのは永続化モデル側。Spring Data JDBCでは子エンティティのバージョンは扱えないため、`Payment`集約ルートにのみ持たせる
+- リポジトリ実装は、読み込み時と保存後の双方でバージョンを集約へ書き戻す。Spring Data JDBCは`save()`が返すインスタンスにのみバージョンを加算し、またその値でINSERT/UPDATEを判定するため、書き戻しを怠ると既存集約の保存がINSERTとして発行される
 
 ### 不変条件の置き場所
 
@@ -151,7 +154,7 @@ REQ-PAY-005〜008、REQ-PAY-010の各不変条件は、`Payment`集約のメソ�
 payment.capture(amount);   // 内部で与信額・有効期限・PENDING重複を検査し、違反なら例外
 
 // 悪い例: application層で検査する
-if (payment.authorizedAmount().isLessThan(amount)) { throw ...; }
+if (amount.isGreaterThan(payment.authorizedAmount())) { throw ...; }
 ```
 
 ### コンテキスト間モデル
@@ -407,6 +410,7 @@ settlement.psp.webhook-event-retention=30d
 class ArchitectureTest {
 
     private static final JavaClasses classes = new ClassFileImporter()
+        .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
         .importPackages("com.example.settlement");
 
     @Test
@@ -439,7 +443,7 @@ class ArchitectureTest {
 
     @Test
     void domainMustNotDependOnFrameworks() {
-        noClasses().that().resideInAPackage("..domain..")
+        noClasses().that().resideInAnyPackage("..domain..", "..shared..")
             .should().dependOnClassesThat().resideInAnyPackage(
                 "org.springframework..", "jakarta.persistence..", "jakarta.validation..")
             .check(classes);
@@ -453,13 +457,13 @@ class ArchitectureTest {
 - `shared`が`order`/`payment`のどちらにも依存しない(Shared Kernelとしての`Money`が業務ロジックを持ち込む方向に育たないための歯止め)
 - 各コンテキストの`domain`層が外側の層に依存しない
 - `PaymentOutcomePort`の実装が`order`パッケージ以外に増えない
-- `domain`層がフレームワークに依存しない(永続化アノテーションをドメインモデルに付けない)
+- `domain`層と`shared`がフレームワークに依存しない(永続化アノテーションをドメインモデルに付けない)
 
 ### 方式の選定: ArchUnitのみを採用する
 
 依存関係の検証はArchUnitのみで行い、Mavenのマルチモジュール分割は**採用しない**。
 
-Mavenモジュール分割には「依存を`pom.xml`に宣言しないことで、相手のクラスがコンパイル時のクラスパスから物理的に消える」という強みがある。違反はテストを待たずビルド時点で失敗し、IDE上でも入力した瞬間にエラーになる。しかし表現できるのは「モジュール間の依存可否」という粒度に限られ、上記4ルールのうち前半2つしか肩代わりできない。
+Mavenモジュール分割には「依存を`pom.xml`に宣言しないことで、相手のクラスがコンパイル時のクラスパスから物理的に消える」という強みがある。違反はテストを待たずビルド時点で失敗し、IDE上でも入力した瞬間にエラーになる。しかし表現できるのは「モジュール間の依存可否」という粒度に限られ、上記5ルールのうち前半2つしか肩代わりできない。
 
 | ルール | Maven分割 | ArchUnit |
 |---|---|---|
@@ -467,6 +471,7 @@ Mavenモジュール分割には「依存を`pom.xml`に宣言しないことで
 | `shared` → `order`/`payment` の禁止 | 可 | 可 |
 | `domain`層 → 外側の層 の禁止 | **不可**(1モジュール内のパッケージ関係のため) | 可 |
 | `PaymentOutcomePort`の実装者の限定 | **不可**(依存宣言では表現できない) | 可 |
+| `domain`層 → フレームワーク の禁止 | **不可**(全モジュールがSpringに依存するため) | 可 |
 
 分割してもArchUnitは引き続き必要であり、その代償として`pom.xml`の増加・ビルド順序の管理・モジュールをまたぐリファクタリングのコストを負うことになる。割に合わないため、単一モジュールを維持する。
 
