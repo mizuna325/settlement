@@ -90,4 +90,28 @@ public class Order {
     public void refund(boolean fullyRefunded) {
         transitionTo(fullyRefunded ? OrderStatus.REFUNDED : OrderStatus.PARTIALLY_REFUNDED);
     }
+
+    public OrderId getOrderId() {
+        return this.orderId;
+    }
+
+    public CustomerId getCustomerId() {
+        return this.customerId;
+    }
+
+    public List<OrderLine> getOrderLines() {
+        return this.orderLines;
+    }
+
+    public Money getTotalAmount() {
+        return this.totalAmount;
+    }
+
+    public OrderStatus getOrderStatus() {
+        return this.orderStatus;
+    }
+
+    public long getVersion() {
+        return this.version;
+    }
 }
