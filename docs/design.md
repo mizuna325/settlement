@@ -69,7 +69,8 @@ graph TB
 ```
 com.example.settlement
 ├── order                        # 境界づけられたコンテキスト: 注文
-│   ├── domain                   # Order, OrderId, OrderLine, OrderStatus, OrderRepository(port)
+│   ├── domain                   # Order, OrderId, CustomerId, OrderLine, ProductId, Quantity,
+│   │                            # OrderStatus, OrderRepository(port)
 │   │                            # ※Moneyはshared.Moneyをimportして使う(orderで再定義しない)
 │   ├── application
 │   │   ├── port.in              # CreateOrderUseCase, ConfirmOrderUseCase, CancelOrderUseCase,
@@ -161,7 +162,7 @@ if (amount.isGreaterThan(payment.authorizedAmount())) { throw ...; }
 
 | コンテキスト | 集約ルート | 主な値オブジェクト | ドメインイベント |
 |---|---|---|---|
-| Order | Order | OrderId / Money / OrderLine / CustomerId | OrderCreated / OrderConfirmed / OrderCancelled / OrderSettled / OrderRefunded |
+| Order | Order | OrderId / CustomerId / OrderLine / ProductId / Quantity / Money | OrderCreated / OrderConfirmed / OrderCancelled / OrderSettled / OrderRefunded |
 | Payment | Payment | PaymentId / Money | PaymentAuthorized / PaymentAuthDeclined / PaymentCaptured / PaymentCaptureFailed / PaymentRefunded / PaymentPartiallyRefunded |
 
 ### 永続化
