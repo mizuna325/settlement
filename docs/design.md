@@ -395,10 +395,15 @@ settlement.psp.webhook-event-retention=30d
 ```xml
 <dependency>
     <groupId>com.tngtech.archunit</groupId>
-    <artifactId>archunit-junit5</artifactId>
+    <artifactId>archunit</artifactId>
+    <version>${archunit.version}</version>
     <scope>test</scope>
 </dependency>
 ```
+
+Spring BootのBOM管理外のため、バージョンの明示が必要になる。
+
+`archunit-junit5`(`@AnalyzeClasses` / `@ArchTest`で宣言的に書くためのモジュール)は採用しない。後述のルールは素の`@Test`から`check(classes)`を呼ぶ形で書いており、コアの`archunit`だけで足りる。`archunit-junit5`はJUnit Platformに独自のTestEngineを登録する仕組みであり、JUnitのバージョンに追従する必要が生じるため、必要になるまで持ち込まない。
 
 ### 検証するルール
 
