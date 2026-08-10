@@ -70,11 +70,12 @@ graph TB
 com.example.settlement
 ├── order                        # 境界づけられたコンテキスト: 注文
 │   ├── domain                   # Order, OrderId, CustomerId, OrderLine, ProductId, Quantity,
-│   │                            # OrderStatus, OrderRepository(port)
+│   │                            # OrderStatus
 │   │                            # ※Moneyはshared.Moneyをimportして使う(orderで再定義しない)
 │   ├── application
 │   │   ├── port.in              # CreateOrderUseCase, ConfirmOrderUseCase, CancelOrderUseCase,
 │   │   │                        # SettleOrderUseCase, RefundOrderUseCase
+│   │   ├── port.out             # OrderRepository(※集約ルート経由でのみ入出力)
 │   │   └── service              # CreateOrderService（内部でpaymentのUseCaseを直接呼ぶ）
 │   ├── infrastructure
 │   │   ├── persistence          # 永続化専用モデル + マッパー + Spring Data JDBC Repository実装
@@ -90,14 +91,14 @@ com.example.settlement
 │   │   ├── model.authorization  # Authorization(エンティティ), AuthorizationStatus
 │   │   ├── model.capture        # Capture(エンティティ), CaptureStatus
 │   │   ├── model.refund         # Refund(エンティティ), RefundStatus, RefundReason
-│   │   ├── event                # PaymentAuthorized/AuthDeclined/Captured/CaptureFailed/Refunded
-│   │   │                        # ↑ ただのJavaレコード。PaymentOutcomePortの引数として使われる
-│   │   └── repository           # PaymentRepository(port) ※集約ルート経由でのみ入出力
+│   │   └── event                # PaymentAuthorized/AuthDeclined/Captured/CaptureFailed/Refunded
+│   │                             # ↑ ただのJavaレコード。PaymentOutcomePortの引数として使われる
 │   ├── application
 │   │   ├── port.in              # AuthorizePaymentUseCase, RefundPaymentUseCase
 │   │   │                        # ↑ orderから直接呼ばれる入口はこの2つのみ
 │   │   ├── port.out             # PaymentOutcomePort（← orderモジュールが依存してよい唯一の公開interface）,
-│   │   │                        # PspDispatchQueuePort, PspIdempotencyKeyPort, WebhookEventStorePort
+│   │   │                        # PspDispatchQueuePort, PspIdempotencyKeyPort, WebhookEventStorePort,
+│   │   │                        # PaymentRepository(※集約ルート経由でのみ入出力)
 │   │   └── service               # AuthorizePaymentService, RefundPaymentService, HandlePspWebhookService
 │   │                             # CapturePaymentService(port.inを持たない内部専用サービス。
 │   │                             #   HandlePspWebhookServiceが与信成功時に直接呼ぶ)
@@ -121,6 +122,8 @@ com.example.settlement
 │
 └── SettlementApplication.java
 ```
+
+**ポートの基準**: 外部に依頼する操作はすべて`application.port.out`にインターフェースとして定義し、実装を`infrastructure`(または他モジュール)に置く。集約のリポジトリも例外としない。`domain`はモデルのみを持ち、外部との接点を一切持たない。
 
 **依存の向き**: `order → payment`（`payment.application.port.out.PaymentOutcomePort`と`payment.domain.event`のみ）の一方向。`payment`パッケージは`order`を一切importしない。`PaymentOutcomePort`の実装(`PaymentOutcomeAdapter`)は`order`側が用意し、Spring DIが自動的に解決する。`shared`は例外的に`order`・`payment`の両方からimportされてよいが、`shared`自身は`order`・`payment`のどちらにも依存しない(依存は常に外側から`shared`への一方向)。`pspsimulator`は演習用の外部システム代役であり、`payment`とはHTTP経由でのみ繋がる。
 
