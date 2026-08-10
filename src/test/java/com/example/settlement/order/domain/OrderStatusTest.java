@@ -88,5 +88,6 @@ class OrderStatusTest {
                 assertFalse(from.canTransitionTo(to), from + " -> " + to + " は許可されない");
             }
         }
+
     }
 }
