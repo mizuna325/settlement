@@ -8,4 +8,8 @@ public record AuthorizationId(UUID authorizationId) {
             throw new IllegalArgumentException("authorizationId must not be null.");
         }
     }
+
+    public static AuthorizationId generate() {
+        return new AuthorizationId(UUID.randomUUID());
+    }
 }
