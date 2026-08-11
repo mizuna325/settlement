@@ -32,18 +32,18 @@ graph TB
     direction TB
     subgraph OC["order モジュール"]
       direction TB
-      OP["presentation<br/>OrderController"] --> OA["application<br/>CreateOrderService"]
+      OP["adapter.in.web<br/>OrderController"] --> OA["application<br/>CreateOrderService"]
       OA --> OD["domain<br/>Order / OrderStatus"]
-      OA --> OI["infrastructure<br/>Spring Data JDBC"]
-      OL["infrastructure.eventing<br/>PaymentOutcomeAdapter"] --> OA
+      OA --> OI["adapter.out.persistence<br/>Spring Data JDBC"]
+      OL["adapter.in.eventing<br/>PaymentOutcomeAdapter"] --> OA
     end
     subgraph PC["payment モジュール"]
       direction TB
-      PP["presentation<br/>PaymentController"] --> PA["application<br/>AuthorizePaymentService 等"]
-      PW["presentation.webhook<br/>PspWebhookController"] --> PA
+      PP["adapter.in.web<br/>PaymentController"] --> PA["application<br/>AuthorizePaymentService 等"]
+      PW["adapter.in.webhook<br/>PspWebhookController"] --> PA
       PA --> PD["domain<br/>Payment(集約)"]
-      PA --> PI["infrastructure<br/>Spring Data JDBC"]
-      PA --> PO["infrastructure.outbox<br/>PspDispatchOutbox"]
+      PA --> PI["adapter.out.persistence<br/>Spring Data JDBC"]
+      PA --> PO["adapter.out.outbox<br/>PspDispatchOutbox"]
     end
     OA -- "① 直接呼び出し(同一Tx)" --> PA
     PA -- "② PaymentOutcomePort呼び出し(同一Tx)" --> OL
@@ -77,13 +77,13 @@ com.example.settlement
 │   │   │                        # SettleOrderUseCase, RefundOrderUseCase
 │   │   ├── port.out             # OrderRepository(※集約ルート経由でのみ入出力)
 │   │   └── service              # CreateOrderService（内部でpaymentのUseCaseを直接呼ぶ）
-│   ├── infrastructure
-│   │   ├── persistence          # 永続化専用モデル + マッパー + Spring Data JDBC Repository実装
-│   │   └── eventing             # PaymentOutcomeAdapter implements PaymentOutcomePort
-│   │                             # （paymentからの結果通知を受けてorderのUseCaseを呼ぶ）
-│   └── presentation
-│       ├── rest                 # OrderController, DTO
-│       └── exception            # GlobalExceptionHandler
+│   └── adapter
+│       ├── in                   # orderを駆動する側
+│       │   ├── web              # OrderController, DTO, GlobalExceptionHandler
+│       │   └── eventing         # PaymentOutcomeAdapter implements PaymentOutcomePort
+│       │                        # （paymentからの結果通知を受けてorderのUseCaseを呼ぶ）
+│       └── out                  # orderが依頼する側
+│           └── persistence      # 永続化専用モデル + マッパー + Spring Data JDBC Repository実装
 │
 ├── payment                      # 境界づけられたコンテキスト: 決済
 │   ├── domain
@@ -102,15 +102,15 @@ com.example.settlement
 │   │   └── service               # AuthorizePaymentService, RefundPaymentService, HandlePspWebhookService
 │   │                             # CapturePaymentService(port.inを持たない内部専用サービス。
 │   │                             #   HandlePspWebhookServiceが与信成功時に直接呼ぶ)
-│   ├── infrastructure
-│   │   ├── persistence            # 永続化専用モデル(Payment集約丸ごと) + マッパー + Repository実装
-│   │   ├── outbox                  # PspDispatchEvent, PspDispatchQueuePortの実装, PspDispatchRelay(@Scheduled)
-│   │   ├── gateway                  # PspClient(RestClient)。PspDispatchRelayが送信に使う
-│   │   └── idempotency               # PspIdempotencyKeyJdbcStore, WebhookEventJdbcStore(受信側の冪等性)
-│   └── presentation
-│       ├── rest                      # PaymentController(照会用)
-│       ├── webhook                    # PspWebhookController(署名検証・eventId冪等チェック)
-│       └── exception                  # GlobalExceptionHandler
+│   └── adapter
+│       ├── in                     # paymentを駆動する側
+│       │   ├── web                # PaymentController(照会用), GlobalExceptionHandler
+│       │   └── webhook             # PspWebhookController(署名検証・eventId冪等チェック)
+│       └── out                    # paymentが依頼する側
+│           ├── persistence         # 永続化専用モデル(Payment集約丸ごと) + マッパー + Repository実装
+│           ├── outbox               # PspDispatchEvent, PspDispatchQueuePortの実装, PspDispatchRelay(@Scheduled)
+│           ├── gateway               # PspClient(RestClient)。PspDispatchRelayが送信に使う
+│           └── idempotency            # PspIdempotencyKeyJdbcStore, WebhookEventJdbcStore(受信側の冪等性)
 │
 ├── shared                          # Money, ClockPort, CorrelationId。orderとpaymentが共有するShared Kernel。
 │                                    # 業務ロジックは持たず、通貨計算等の普遍的な不変条件のみを持つ。
@@ -123,7 +123,9 @@ com.example.settlement
 └── SettlementApplication.java
 ```
 
-**ポートの基準**: 外部に依頼する操作はすべて`application.port.out`にインターフェースとして定義し、実装を`infrastructure`(または他モジュール)に置く。集約のリポジトリも例外としない。`domain`はモデルのみを持ち、外部との接点を一切持たない。
+**ポートの基準**: 外部に依頼する操作はすべて`application.port.out`にインターフェースとして定義し、実装を`adapter.out`(または他モジュール)に置く。集約のリポジトリも例外としない。`domain`はモデルのみを持ち、外部との接点を一切持たない。
+
+**アダプタの基準**: DBもUIも等しく「外部」として扱い、駆動する側(`adapter.in`)と依頼される側(`adapter.out`)で分ける。`port.in`を呼ぶものが`adapter.in`、`port.out`を実装するものが`adapter.out`と対応する。`PaymentOutcomeAdapter`は`payment`の`port.out`を実装するが、`order`から見ると`order`のUseCaseを呼んで駆動する側なので`order.adapter.in`に置く。
 
 **依存の向き**: `order → payment`（`payment.application.port.out.PaymentOutcomePort`と`payment.domain.event`のみ）の一方向。`payment`パッケージは`order`を一切importしない。`PaymentOutcomePort`の実装(`PaymentOutcomeAdapter`)は`order`側が用意し、Spring DIが自動的に解決する。`shared`は例外的に`order`・`payment`の両方からimportされてよいが、`shared`自身は`order`・`payment`のどちらにも依存しない(依存は常に外側から`shared`への一方向)。`pspsimulator`は演習用の外部システム代役であり、`payment`とはHTTP経由でのみ繋がる。
 
@@ -144,7 +146,7 @@ com.example.settlement
 
 - `PaymentStatus`は子エンティティからの導出値ではなく、`payments`テーブルの列として永続化する。滞留中の決済(`*_ING`)を状態列だけで抽出できるようにするため。整合性は`Payment`集約が子エンティティの更新と同時に自ら維持する
 - 状態はすべてJavaのenumとして定義し、遷移の可否はenum自身または集約のメソッドで判定する。文字列比較で分岐させない
-- ドメインモデルにはフレームワークのアノテーションを付けない(§7)。`@Id`や`@MappedCollection`を伴う永続化専用モデルは`infrastructure.persistence`に別途置き、リポジトリ実装が集約との相互変換を担う
+- ドメインモデルにはフレームワークのアノテーションを付けない(§7)。`@Id`や`@MappedCollection`を伴う永続化専用モデルは`adapter.out.persistence`に別途置き、リポジトリ実装が集約との相互変換を担う
 - 楽観ロックのため、集約ルートはアノテーションを持たない`long version`を保持する。`@Version`が付くのは永続化モデル側。Spring Data JDBCでは子エンティティのバージョンは扱えないため、`Payment`集約ルートにのみ持たせる
 - リポジトリ実装は、読み込み時と保存後の双方でバージョンを集約へ書き戻す。Spring Data JDBCは`save()`が返すインスタンスにのみバージョンを加算し、またその値でINSERT/UPDATEを判定するため、書き戻しを怠ると既存集約の保存がINSERTとして発行される
 - REQ-PAY-011の「直前の状態」は返金累計額から導出する(累計が0なら`CAPTURED`、0より大きければ`PARTIALLY_REFUNDED`)。直前の状態を保持する列は設けない。この累計は`RefundStatus.REFUNDED`の子のみを対象とする。REQ-PAY-008の超過判定では`PENDING`の返金も含める必要があるため、両者で集計対象が異なる
@@ -293,7 +295,7 @@ sequenceDiagram
 
 ## 5. 外部PSP境界の実装方針
 
-- `PspDispatchQueuePort`（application/port.out）に「PSPへ送るべきコマンドをキューに積む」操作を定義。実際の送信は`infrastructure.outbox.PspDispatchRelay`(`@Scheduled`)が担い、`infrastructure.gateway.PspClient`(RestClient)でHTTP呼び出しする。
+- `PspDispatchQueuePort`（application/port.out）に「PSPへ送るべきコマンドをキューに積む」操作を定義。実際の送信は`adapter.out.outbox.PspDispatchRelay`(`@Scheduled`)が担い、`adapter.out.gateway.PspClient`(RestClient)でHTTP呼び出しする。
 - **ディスパッチの走査と送信**: 詳細は§5.1。
 - **送信失敗時**: 指数バックオフで再送し、上限(REQ-NFR-002)を超えたレコードは`DEAD`として送信を止める。
 - **送信側の冪等性**: `Idempotency-Key`にはディスパッチレコードのIDをそのまま用い、リトライ時も同じ値を送る。`payment_psp_idempotency_keys`で管理する。
@@ -434,7 +436,7 @@ class ArchitectureTest {
     @Test
     void domainMustNotDependOnOuterLayers() {
         noClasses().that().resideInAPackage("..domain..")
-            .should().dependOnClassesThat().resideInAnyPackage("..application..", "..infrastructure..", "..presentation..")
+            .should().dependOnClassesThat().resideInAnyPackage("..application..", "..adapter..")
             .check(classes);
     }
 
