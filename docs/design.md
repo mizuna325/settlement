@@ -174,17 +174,96 @@ if (amount.isGreaterThan(payment.authorizedAmount())) { throw ...; }
 
 ### 永続化
 
-Flyway管理下のテーブル:
+```mermaid
+erDiagram
+  orders ||--|{ order_lines : "集約内"
+  payments ||--o| payment_authorizations : "集約内"
+  payments ||--o| payment_captures : "集約内"
+  payments ||--o{ payment_refunds : "集約内"
+  orders |o..o| payments : "OrderIdで参照(FKなし)"
 
-```
-orders, order_lines
-payments, payment_authorizations, payment_captures, payment_refunds,
-payment_psp_dispatch_events,     -- PSPへ送るべきコマンドのOutbox（Payment→PSPの唯一の非同期境界）
-payment_psp_idempotency_keys,    -- 送信側の冪等性(Idempotency-Key管理)
-payment_webhook_events           -- 受信側の冪等性(PSPから届いたeventIdの重複排除)
+  orders {
+    uuid order_id PK
+    uuid customer_id
+    bigint total_amount
+    varchar currency
+    varchar status
+    bigint version
+  }
+  order_lines {
+    uuid order_id PK "orders への FK"
+    int line_index PK "List の順序を保持"
+    varchar product_id
+    int quantity
+    bigint amount
+    varchar currency
+  }
+  payments {
+    uuid payment_id PK
+    uuid order_id "orders への FK は張らない"
+    bigint amount
+    varchar currency
+    varchar status
+    bigint version
+  }
+  payment_authorizations {
+    uuid authorization_id PK
+    uuid payment_id FK
+    bigint amount
+    varchar currency
+    varchar psp_reference "与信成功まで NULL"
+    varchar status
+    timestamptz authorized_at "与信成功まで NULL"
+    timestamptz expires_at "与信成功まで NULL"
+  }
+  payment_captures {
+    uuid capture_id PK
+    uuid payment_id FK
+    bigint amount
+    varchar currency
+    varchar psp_reference "確定まで NULL"
+    varchar status
+    timestamptz captured_at "確定まで NULL"
+  }
+  payment_refunds {
+    uuid refund_id PK
+    uuid payment_id FK
+    int refund_index "List の順序を保持"
+    bigint amount
+    varchar currency
+    varchar psp_reference "完了まで NULL"
+    varchar status
+    varchar reason
+    timestamptz requested_at
+  }
+  payment_psp_dispatch_events {
+    uuid dispatch_event_id PK "Idempotency-Key として送信する"
+    uuid payment_id "FK なし"
+    varchar operation "AUTHORIZE / CAPTURE / REFUND"
+    bigint amount
+    varchar currency
+    varchar status "PENDING / SENDING / SENT / DEAD"
+    smallint attempts "確保時に加算"
+    timestamptz claimed_at "確保まで NULL"
+    timestamptz created_at "走査の ORDER BY 対象"
+  }
+  payment_psp_idempotency_keys {
+    uuid dispatch_event_id PK
+    timestamptz created_at "REQ-NFR-006 により24時間で削除"
+  }
+  payment_webhook_events {
+    varchar event_id PK "PSP が採番。UNIQUE 制約で二重処理を防ぐ"
+    timestamptz received_at "REQ-NFR-007 により30日で削除"
+  }
 ```
 
-カラム定義・制約・インデックスはマイグレーションファイル自体を仕様とする(二重管理を避ける)。`order`側にはOutboxテーブルを持たない。
+`payment_psp_dispatch_events`には`(created_at)`の部分索引を`WHERE status IN ('PENDING','SENDING')`で張る。`SENT`は削除されず蓄積するため、走査対象を処理待ちの行だけに限定する。
+
+**外部キーは集約の内側にのみ張る。** `payments`が`orders`を参照する箇所と、Outbox・冪等性の3テーブルには張らない。前者は境界づけられたコンテキストをまたぐため、後者は業務データとは独立した仕組みであるため。将来サービスとして分割する際、外部キーがあるとテーブルを別DBへ移せなくなる。
+
+`payment_psp_dispatch_events`・`payment_psp_idempotency_keys`・`payment_webhook_events`は集約ではない。`Payment`集約の永続化とは別のアダプタが読み書きする。
+
+カラム定義・制約・インデックスはマイグレーションファイル自体を仕様とする(二重管理を避ける)。上図に載せているのは主キーと関連のみ。`order`側にはOutboxテーブルを持たない。
 
 ---
 
