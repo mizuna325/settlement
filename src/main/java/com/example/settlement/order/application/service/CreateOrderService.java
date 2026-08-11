@@ -28,10 +28,10 @@ class CreateOrderService implements CreateOrderUseCase {
     @Transactional
     public OrderId create(CustomerId customerId, List<OrderLine> orderLines) {
         Order order = Order.createOrder(customerId, orderLines);
-        Order updatedOrder = orderRepository.save(order);
+        Order savedOrder = orderRepository.save(order);
         authorizePaymentUseCase.authorize(
-                new com.example.settlement.payment.domain.OrderId(updatedOrder.getOrderId().orderId()),
-                updatedOrder.getTotalAmount());
-        return updatedOrder.getOrderId();
+                new com.example.settlement.payment.domain.OrderId(savedOrder.getOrderId().orderId()),
+                savedOrder.getTotalAmount());
+        return savedOrder.getOrderId();
     }
 }

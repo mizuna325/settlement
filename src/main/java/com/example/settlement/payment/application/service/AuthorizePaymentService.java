@@ -26,9 +26,9 @@ class AuthorizePaymentService implements AuthorizePaymentUseCase {
     @Transactional
     public PaymentId authorize(OrderId orderId, Money amount) {
         Payment payment = Payment.create(orderId, amount);
-        Payment updatedPayment = paymentRepository.save(payment);
-        pspDispatchQueuePort.enqueue(PaymentOperation.AUTHORIZE, updatedPayment.getPaymentId(),
-                updatedPayment.getAmount());
-        return updatedPayment.getPaymentId();
+        Payment savedPayment = paymentRepository.save(payment);
+        pspDispatchQueuePort.enqueue(PaymentOperation.AUTHORIZE, savedPayment.getPaymentId(),
+                savedPayment.getAmount());
+        return savedPayment.getPaymentId();
     }
 }
