@@ -18,7 +18,7 @@
 
 ## 1. 設計方針
 
-- **モジュラーモノリス**: `order` / `payment` を境界づけられたコンテキストとしてトップレベルパッケージで分離し、各コンテキスト内をクリーンアーキテクチャの4層にする。
+- **モジュラーモノリス**: `order` / `payment` を境界づけられたコンテキストとしてトップレベルパッケージで分離し、各コンテキスト内を`domain` / `application` / `adapter`の3層にし、`adapter`をin/outで分ける。
 - **自社ドメイン同士(Order⇔Payment)はローカルトランザクションで保証する**。Outboxは使わない。依存の向きは `order → payment` の一方向のみに固定する。
   - Order起点の呼び出し(与信・売上確定・返金の要求)は、`order`が`payment`のユースケース(port.in)を直接呼ぶ同期呼び出し。同一トランザクションに乗せられる。
   - Payment起点の通知(PSPからの結果が確定した後、Orderの状態を進める)は、`payment`が`order`を直接呼ばず、`payment.application.port.out`に自分で定義した`PaymentOutcomePort`インターフェース経由で行う。実装(`PaymentOutcomeAdapter`)は`order`側が用意し、DIで解決される。`payment`は「誰が実装しているか」を一切知らない。これにより`payment → order`の依存を作らず、循環依存を避ける。ただのメソッド呼び出しなので、呼び出し元のトランザクションにそのまま乗り、Payment更新とOrder更新は自然に1つのローカルトランザクションとして確定する。
@@ -86,17 +86,19 @@ com.example.settlement
 │           └── persistence      # 永続化専用モデル + マッパー + Spring Data JDBC Repository実装
 │
 ├── payment                      # 境界づけられたコンテキスト: 決済
-│   ├── domain
-│   │   ├── model                # Payment(集約ルート), PaymentId ※Moneyはshared.Moneyをimport
-│   │   ├── model.authorization  # Authorization(エンティティ), AuthorizationStatus
-│   │   ├── model.capture        # Capture(エンティティ), CaptureStatus
-│   │   ├── model.refund         # Refund(エンティティ), RefundStatus, RefundReason
-│   │   └── event                # PaymentAuthorized/AuthDeclined/Captured/CaptureFailed/Refunded
-│   │                             # ↑ ただのJavaレコード。PaymentOutcomePortの引数として使われる
+│   ├── domain                   # Payment(集約ルート), PaymentId, OrderId, PaymentStatus,
+│   │                            # Authorization, AuthorizationId, AuthorizationStatus,
+│   │                            # Capture, CaptureId, CaptureStatus,
+│   │                            # Refund, RefundId, RefundStatus, RefundReason
+│   │                            # ※OrderIdはpayment側で独自に定義する(order.domain.OrderIdとは別の型)。
+│   │                            # 決済は注文を単なる参照としてしか扱わないため(UL §5)
+│   │                            # ※Moneyはshared.Moneyをimportして使う
 │   ├── application
 │   │   ├── port.in              # AuthorizePaymentUseCase, RefundPaymentUseCase
 │   │   │                        # ↑ orderから直接呼ばれる入口はこの2つのみ
 │   │   ├── port.out             # PaymentOutcomePort（← orderモジュールが依存してよい唯一の公開interface）,
+│   │   │                        # PaymentAuthorized/AuthDeclined/Captured/CaptureFailed/Refunded
+│   │   │                        #   （PaymentOutcomePortの引数となるレコード）,
 │   │   │                        # PspDispatchQueuePort, PspIdempotencyKeyPort, WebhookEventStorePort,
 │   │   │                        # PaymentRepository(※集約ルート経由でのみ入出力)
 │   │   └── service               # AuthorizePaymentService, RefundPaymentService, HandlePspWebhookService
@@ -127,7 +129,7 @@ com.example.settlement
 
 **アダプタの基準**: DBもUIも等しく「外部」として扱い、駆動する側(`adapter.in`)と依頼される側(`adapter.out`)で分ける。`port.in`を呼ぶものが`adapter.in`、`port.out`を実装するものが`adapter.out`と対応する。`PaymentOutcomeAdapter`は`payment`の`port.out`を実装するが、`order`から見ると`order`のUseCaseを呼んで駆動する側なので`order.adapter.in`に置く。
 
-**依存の向き**: `order → payment`（`payment.application.port.out.PaymentOutcomePort`と`payment.domain.event`のみ）の一方向。`payment`パッケージは`order`を一切importしない。`PaymentOutcomePort`の実装(`PaymentOutcomeAdapter`)は`order`側が用意し、Spring DIが自動的に解決する。`shared`は例外的に`order`・`payment`の両方からimportされてよいが、`shared`自身は`order`・`payment`のどちらにも依存しない(依存は常に外側から`shared`への一方向)。`pspsimulator`は演習用の外部システム代役であり、`payment`とはHTTP経由でのみ繋がる。
+**依存の向き**: `order → payment`（`payment.application.port.out`のみ）の一方向。`payment`パッケージは`order`を一切importしない。`PaymentOutcomePort`の実装(`PaymentOutcomeAdapter`)は`order`側が用意し、Spring DIが自動的に解決する。`shared`は例外的に`order`・`payment`の両方からimportされてよいが、`shared`自身は`order`・`payment`のどちらにも依存しない(依存は常に外側から`shared`への一方向)。`pspsimulator`は演習用の外部システム代役であり、`payment`とはHTTP経由でのみ繋がる。
 
 ---
 
