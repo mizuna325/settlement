@@ -99,7 +99,7 @@ com.example.settlement
 │   │   ├── port.out             # PaymentOutcomePort（← orderモジュールが依存してよい唯一の公開interface）,
 │   │   │                        # PaymentAuthorized/AuthDeclined/Captured/CaptureFailed/Refunded
 │   │   │                        #   （PaymentOutcomePortの引数となるレコード）,
-│   │   │                        # PspDispatchQueuePort, PspIdempotencyKeyPort, WebhookEventStorePort,
+│   │   │                        # PspDispatchQueuePort, WebhookEventStorePort,
 │   │   │                        # PaymentRepository(※集約ルート経由でのみ入出力)
 │   │   └── service               # AuthorizePaymentService, RefundPaymentService, HandlePspWebhookService
 │   │                             # CapturePaymentService(port.inを持たない内部専用サービス。
@@ -112,7 +112,7 @@ com.example.settlement
 │           ├── persistence         # 永続化専用モデル(Payment集約丸ごと) + マッパー + Repository実装
 │           ├── outbox               # PspDispatchEvent, PspDispatchQueuePortの実装, PspDispatchRelay(@Scheduled)
 │           ├── gateway               # PspClient(RestClient)。PspDispatchRelayが送信に使う
-│           └── idempotency            # PspIdempotencyKeyJdbcStore, WebhookEventJdbcStore(受信側の冪等性)
+│           └── idempotency            # WebhookEventJdbcStore(受信側の冪等性)
 │
 ├── shared                          # Money, ClockPort, CorrelationId。orderとpaymentが共有するShared Kernel。
 │                                    # 業務ロジックは持たず、通貨計算等の普遍的な不変条件のみを持つ。
