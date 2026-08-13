@@ -6,7 +6,7 @@ import com.example.settlement.order.domain.Order;
 import com.example.settlement.order.domain.OrderId;
 
 public interface OrderRepository {
-    Order save(Order oder);
+    Order save(Order order);
 
     Optional<Order> findById(OrderId orderId);
 }
