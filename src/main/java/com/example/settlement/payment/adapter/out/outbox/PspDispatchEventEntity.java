@@ -23,6 +23,7 @@ record PspDispatchEventEntity(@Id UUID dispatchEventId,
         String status,
         short attempts,
         Instant claimedAt,
+        Instant nextAttemptAt,
         Instant createdAt) {
 
     static PspDispatchEventEntity pending(PaymentOperation operation, PaymentId paymentId, Money amount,
@@ -36,6 +37,7 @@ record PspDispatchEventEntity(@Id UUID dispatchEventId,
                 PspDispatchStatus.PENDING.name(),
                 (short) 0,
                 null,
+                createdAt, // 初回は待たずに送る
                 createdAt);
     }
 }
