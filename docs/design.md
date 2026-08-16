@@ -43,13 +43,13 @@ graph TB
       PW["adapter.in.webhook<br/>PspWebhookController"] --> PA
       PA --> PD["domain<br/>Payment(集約)"]
       PA --> PI["adapter.out.persistence<br/>Spring Data JDBC"]
-      PA --> PO["adapter.out.outbox<br/>PspDispatchOutbox"]
+      PA --> PO["adapter.out.outbox<br/>PspDispatchQueueAdapter"]
     end
     OA -- "① 直接呼び出し(同一Tx)" --> PA
     PA -- "② PaymentOutcomePort呼び出し(同一Tx)" --> OL
     PO -- "③ @Scheduled Relay" --> RELAY["PspDispatchRelay"]
   end
-  SH["shared<br/>Money / ClockPort / CorrelationId"]
+  SH["shared<br/>Money / Currency / ClockPort / CorrelationId"]
   OD -. "import" .-> SH
   PD -. "import" .-> SH
   OI --> DB[("PostgreSQL")]
@@ -110,22 +110,25 @@ com.example.settlement
 │       │   └── webhook             # PspWebhookController(署名検証・eventId冪等チェック)
 │       └── out                    # paymentが依頼する側
 │           ├── persistence         # 永続化専用モデル(Payment集約丸ごと) + マッパー + Repository実装
-│           ├── outbox               # PspDispatchEvent, PspDispatchQueuePortの実装, PspDispatchRelay(@Scheduled)
+│           ├── outbox               # PspDispatchEventEntity, PspDispatchStatus,
+│           │                        # PspDispatchQueueAdapter(PspDispatchQueuePortの実装),
+│           │                        # PspDispatchRelay(@Scheduled), PspDispatchStore, PspDispatchProperties
 │           ├── gateway               # PspClient(RestClient)。PspDispatchRelayが送信に使う
 │           └── idempotency            # WebhookEventJdbcStore(受信側の冪等性)
 │
-├── shared                          # Money, ClockPort, CorrelationId。orderとpaymentが共有するShared Kernel。
+├── shared                          # Money, Currency, ClockPort, CorrelationId。orderとpaymentが共有するShared Kernel。
 │                                    # 業務ロジックは持たず、通貨計算等の普遍的な不変条件のみを持つ。
 │                                    # ArchUnitで「sharedはorder/paymentに依存しない」ことを検証する(§7)
 │
 ├── pspsimulator                     # 演習用: 外部PSPを模したスタブ(実プロダクトなら別リポジトリ/別サービス)
-│   ├── FakePspController             # /authorize /capture /refund → 即座に202 Acceptedを返す
+│   ├── FakePspController             # /psp/authorize /psp/capture /psp/refund → 即座に202 Acceptedを返す
+│   ├── PspIdempotencyKeyStore         # PSP側の冪等性キーストア([ADR-0002](./adr/0002-idempotency-key-store-on-psp-side.md))
 │   └── WebhookDispatcher              # 別スレッド/遅延実行で settlement アプリへWebhookをPOSTする
 │
 └── SettlementApplication.java
 ```
 
-**ポートの基準**: 外部に依頼する操作はすべて`application.port.out`にインターフェースとして定義し、実装を`adapter.out`(または他モジュール)に置く。集約のリポジトリも例外としない。`domain`はモデルのみを持ち、外部との接点を一切持たない。
+**ポートの基準**: アプリケーション層が外部に依頼する操作はすべて`application.port.out`にインターフェースとして定義し、実装を`adapter.out`(または他モジュール)に置く。集約のリポジトリも例外としない。`domain`はモデルのみを持ち、外部との接点を一切持たない。
 
 **アダプタの基準**: DBもUIも等しく「外部」として扱い、駆動する側(`adapter.in`)と依頼される側(`adapter.out`)で分ける。`port.in`を呼ぶものが`adapter.in`、`port.out`を実装するものが`adapter.out`と対応する。`PaymentOutcomeAdapter`は`payment`の`port.out`を実装するが、`order`から見ると`order`のUseCaseを呼んで駆動する側なので`order.adapter.in`に置く。
 
@@ -242,9 +245,10 @@ erDiagram
     varchar operation "AUTHORIZE / CAPTURE / REFUND"
     bigint amount
     varchar currency
-    varchar status "PENDING / SENDING / SENT / DEAD"
+    varchar status "PENDING / SENDING / SENT / FAILED"
     smallint attempts "確保時に加算"
     timestamptz claimed_at "確保まで NULL"
+    timestamptz next_attempt_at "次に確保してよい時刻。バックオフに使う"
     timestamptz created_at "走査の ORDER BY 対象"
   }
   payment_psp_idempotency_keys {
@@ -296,7 +300,7 @@ sequenceDiagram
 
   Note over Relay,PSP: 非同期(ポーリング)
   Relay->>OB: 未処理レコードをポーリング
-  Relay->>PSP: POST /authorize (Idempotency-Key付き)
+  Relay->>PSP: POST /psp/authorize (Idempotency-Key付き)
   PSP-->>Relay: 202 Accepted
 
   Note over PSP,P: しばらく経ってから非同期に
@@ -313,7 +317,7 @@ sequenceDiagram
 
   Note over Relay,PSP: 非同期(ポーリング)。与信と同じ仕組みをそのまま使う
   Relay->>OB: 未処理レコードをポーリング
-  Relay->>PSP: POST /capture (Idempotency-Key付き)
+  Relay->>PSP: POST /psp/capture (Idempotency-Key付き)
   PSP-->>Relay: 202 Accepted
 
   PSP->>P: POST /payment/webhook {status: CAPTURED, eventId}
@@ -362,7 +366,7 @@ sequenceDiagram
   P->>OB: INSERT PspDispatchEvent(refund)
   end
   Relay->>OB: ポーリング
-  Relay->>PSP: POST /refund (Idempotency-Key付き)
+  Relay->>PSP: POST /psp/refund (Idempotency-Key付き)
   PSP-->>Relay: 202 Accepted
   PSP->>P: POST /payment/webhook {status: REFUNDED, eventId}
   rect rgba(168,98,44,0.08)
@@ -378,8 +382,8 @@ sequenceDiagram
 
 - `PspDispatchQueuePort`（application/port.out）に「PSPへ送るべきコマンドをキューに積む」操作を定義。実際の送信は`adapter.out.outbox.PspDispatchRelay`(`@Scheduled`)が担い、`adapter.out.gateway.PspClient`(RestClient)でHTTP呼び出しする。
 - **ディスパッチの走査と送信**: 詳細は§5.1。
-- **送信失敗時**: 指数バックオフで再送し、上限(REQ-NFR-002)を超えたレコードは`DEAD`として送信を止める。
-- **送信側の冪等性**: `Idempotency-Key`にはディスパッチレコードのIDをそのまま用い、リトライ時も同じ値を送る。`payment_psp_idempotency_keys`で管理する。
+- **送信失敗時**: 指数バックオフで再送し、上限(REQ-NFR-002)を超えたレコードは`FAILED`として送信を止める。
+- **送信側の冪等性**: `Idempotency-Key`にはディスパッチレコードのIDをそのまま用い、リトライ時も同じ値を送る。settlement側にキーは記録しない。受付済みキーの判定はPSP側の責務であり、`payment_psp_idempotency_keys`は`pspsimulator`が読み書きする([ADR-0002](./adr/0002-idempotency-key-store-on-psp-side.md))。
 - **署名検証**: Webhookの共有シークレットによるHMAC署名ヘッダーを`PspWebhookController`で検証する。
 - **受信側の冪等性**: Webhookペイロードの`eventId`を`payment_webhook_events`に記録し、UNIQUE制約で二重処理を防ぐ。
 - **適用できないWebhook**: 現在の状態に適用できない通知を受けた場合も、状態を変えずに`200 OK`を返す(REQ-PSP-007)。エラーを返すとPSPが再送を繰り返すため。
@@ -395,14 +399,16 @@ sequenceDiagram
 | `PENDING` | 未送信。走査の対象 |
 | `SENDING` | Relayが確保済み。送信中 |
 | `SENT` | PSPが`202 Accepted`で受理した。**決済の成否ではない**(結果はWebhookで別途確定する) |
-| `DEAD` | 試行回数が上限(REQ-NFR-002)に達した。以降は拾わず、人手で調査する |
+| `FAILED` | 試行回数が上限(REQ-NFR-002)に達した。以降は拾わず、人手で調査する |
 
 ```
 PENDING ──確保──→ SENDING ──202受理──→ SENT
    ↑                  │
-   └──回収(§後述)──────┘
-   
-   attempts が上限に達したら → DEAD
+   │                  ├──送信失敗──→ PENDING (next_attempt_at を設定してバックオフ。§後述)
+   │                  │
+   └──回収────────────┘ (claimTimeout を過ぎても SENDING のまま。§後述)
+
+   attempts が上限に達したら → FAILED
 ```
 
 #### 走査(確保)
@@ -411,7 +417,7 @@ PENDING ──確保──→ SENDING ──202受理──→ SENT
 
 ```sql
 SELECT * FROM payment_psp_dispatch_events
- WHERE status = 'PENDING'
+ WHERE (status = 'PENDING' AND next_attempt_at <= now())                  -- 未送信 + バックオフ明け
     OR (status = 'SENDING' AND claimed_at < now() - interval '1 minute')  -- 回収対象
  ORDER BY created_at
  LIMIT 10
@@ -431,11 +437,23 @@ COMMIT;                                  -- ロック解放
   → PSPへHTTP送信(トランザクション外)
 
 BEGIN;
-  UPDATE SET status='SENT'  もしくは 失敗情報を記録
+  UPDATE SET status='SENT'
+        もしくは status='PENDING', next_attempt_at=(バックオフ明けの時刻)
+        もしくは status='FAILED'(試行上限に達した場合)
 COMMIT;
 ```
 
 **`attempts`は送信失敗時ではなく確保時に加算する**。送信前にプロセスが落ちた場合でもカウントが進むため、毎回クラッシュを引き起こすレコードが無限に再試行され続けることを防げる。
+
+#### 送信失敗時のバックオフ
+
+送信に失敗した行は`PENDING`へ戻し、次に確保してよい時刻を`next_attempt_at`に書く。待機時間はRelayが計算する(`backoffBase × 2^(attempts-1)`。REQ-NFR-002)。走査クエリはこの時刻を過ぎるまでその行を拾わない。
+
+**待つあいだ行を確保したままにしない。** Relayのスレッドを塞がずに済み、他の行の送信が遅れない。確保したまま待つと`claimTimeout`を超えて占有することになり、処理中の行を他インスタンスが回収して二重に送信する。
+
+待機の状態をDBに持つため、プロセスが再起動しても失われず、複数インスタンス間でも認識がずれない。
+
+上限に達した時点で`FAILED`にする。`FAILED`は終端であり、走査クエリと部分索引のどちらも対象外としているため自動では再送されない。以降は人手で対応する。
 
 #### 取り残された行の回収
 
@@ -443,7 +461,7 @@ COMMIT;
 
 これを防ぐため、`claimed_at`から一定時間(1分)を過ぎても`SENDING`のままの行を、送信されなかったものとみなして再度走査対象に含める(上記クエリのOR条件)。回収専用のスケジューラは設けない。ただし回収の発生は異常の兆候であるため、WARNログに記録する。
 
-タイムアウトは正常な送信にかかる最大時間より十分長く取る。読み取りタイムアウトが5秒(REQ-NFR-003)であるのに対し1分を設定しており、処理中の行を誤って横取りする余地はほぼ無い。
+タイムアウトは正常な送信にかかる最大時間より十分長く取る。1回の確保で行うのは1度の送信だけであり、読み取りタイムアウトが5秒(REQ-NFR-003)であるのに対し1分を設定しているため、処理中の行を誤って横取りする余地はほぼ無い。バックオフの待機はこの時間に含まれない。行を`PENDING`へ戻してから待つためである。
 
 **再送が安全である根拠**: プロセスが落ちた位置は「送信前」か「送信後・結果記録前」のいずれかである。前者なら再送が初回送信となり正しい。後者ならPSPには2回目の到達となるが、`Idempotency-Key`が同一であるためPSP側が重複と判定して処理しない(REQ-PSP-003 / REQ-SIM-005)。**つまりこの回収処理は冪等性キーの存在を前提として初めて成立する**。冪等性キーが無ければ二重決済になる。
 
@@ -454,13 +472,19 @@ COMMIT;
 ```properties
 settlement.psp.dispatch.polling-interval=1s
 settlement.psp.dispatch.max-attempts=5
+settlement.psp.dispatch.backoff-base=1s
 settlement.psp.dispatch.claim-timeout=1m
+settlement.psp.dispatch.batch-size=10
+settlement.psp.dispatch.enabled=true
+settlement.psp.base-url=http://localhost:8080
 settlement.psp.connect-timeout=3s
 settlement.psp.read-timeout=5s
 settlement.psp.authorization-validity=7d
 settlement.psp.idempotency-key-retention=24h
 settlement.psp.webhook-event-retention=30d
 ```
+
+`enabled`はRelayを動かすかの切り替え。テストでは既定で`false`にし、Relayを動かすテストだけが有効化する。走査が他のテストのデータを拾って非決定的になるのを避けるため。
 
 ---
 
@@ -522,7 +546,21 @@ class ArchitectureTest {
     }
 
     @Test
-    void onlyOrderMayImplementPaymentOutcomePort() {
+    void applicationMustNotDependOnAdapters() {
+        noClasses().that().resideInAPackage("..application..")
+            .should().dependOnClassesThat().resideInAPackage("..adapter..")
+            .check(classes);
+    }
+
+    @Test
+    void productionCodeMustNotDependOnPspSimulator() {
+        noClasses().that().resideInAnyPackage("..order..", "..payment..", "..shared..")
+            .should().dependOnClassesThat().resideInAPackage("..pspsimulator..")
+            .check(classes);
+    }
+
+    @Test
+    void onlyOrderMayImplementPaymentOutcomePort() {   // ステップ3で追加する
         classes().that().implement("com.example.settlement.payment.application.port.out.PaymentOutcomePort")
             .should().resideInAPackage("..order..")
             .check(classes);
@@ -543,8 +581,12 @@ class ArchitectureTest {
 - `payment`が`order`を一切importしない
 - `shared`が`order`/`payment`のどちらにも依存しない(Shared Kernelとしての`Money`が業務ロジックを持ち込む方向に育たないための歯止め)
 - 各コンテキストの`domain`層が外側の層に依存しない
+- `application`層が`adapter`層に依存しない(依存の向きをport経由に保つ)
+- 本番コードが演習用の`pspsimulator`に依存しない(HTTP以外の経路で繋がらない)
 - `PaymentOutcomePort`の実装が`order`パッケージ以外に増えない
 - `domain`層と`shared`がフレームワークに依存しない(永続化アノテーションをドメインモデルに付けない)
+
+`onlyOrderMayImplementPaymentOutcomePort`は`PaymentOutcomePort`の実装が現れるステップ3で追加する。ArchUnitは対象が0件のルールを失敗として扱うため。
 
 ### 方式の選定: ArchUnitのみを採用する
 
