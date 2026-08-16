@@ -45,6 +45,22 @@ class ArchitectureTest {
     }
 
     @Test
+    @DisplayName("application 層は adapter 層に依存しない")
+    void applicationMustNotDependOnAdapters() {
+        noClasses().that().resideInAPackage("..application..")
+                .should().dependOnClassesThat().resideInAPackage("..adapter..")
+                .check(classes);
+    }
+
+    @Test
+    @DisplayName("本番コードは演習用の pspsimulator に依存しない")
+    void productionCodeMustNotDependOnPspSimulator() {
+        noClasses().that().resideInAnyPackage("..order..", "..payment..", "..shared..")
+                .should().dependOnClassesThat().resideInAPackage("..pspsimulator..")
+                .check(classes);
+    }
+
+    @Test
     @DisplayName("domain 層と shared はフレームワークに依存しない")
     void domainMustNotDependOnFrameworks() {
         noClasses().that().resideInAnyPackage("..domain..", "..shared..")
