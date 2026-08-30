@@ -1,5 +1,11 @@
 package com.example.settlement.payment.adapter.out.outbox;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+
+import javax.management.RuntimeErrorException;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -7,11 +13,13 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import com.example.settlement.payment.adapter.out.gateway.PspClient;
+import com.example.settlement.payment.adapter.out.gateway.PspDispatchFailedException;
 
 /**
  * Dispatch Outbox を走査し、未送信のレコードをPSPへ送る(REQ-PSP-002)。
  *
- * <p>1周の流れは3段階(design.md §5.1)。
+ * <p>
+ * 1周の流れは3段階(design.md §5.1)。
  *
  * <pre>
  * ① 確保      トランザクション1   PspDispatchStore#claim
@@ -19,7 +27,8 @@ import com.example.settlement.payment.adapter.out.gateway.PspClient;
  * ③ 結果記録  トランザクション2   PspDispatchStore#markSent / markFailed
  * </pre>
  *
- * <p>②をトランザクションに含めないのは、応答待ちの数秒間ずっと行ロックと
+ * <p>
+ * ②をトランザクションに含めないのは、応答待ちの数秒間ずっと行ロックと
  * DBコネクションを占有しないため。
  */
 @Component
@@ -42,30 +51,52 @@ class PspDispatchRelay {
     /**
      * REQ-NFR-001: 走査の間隔は設定値から注入する。
      *
-     * <p>fixedDelay は「前回の完了から次回の開始まで」の間隔。fixedRate と違い、
+     * <p>
+     * fixedDelay は「前回の完了から次回の開始まで」の間隔。fixedRate と違い、
      * 1周が長引いても次の周が重ならない。
      */
     @Scheduled(fixedDelayString = "${settlement.psp.dispatch.polling-interval}")
     void relay() {
-        // ① 確保
-        //    var claimed = pspDispatchStore.claim(properties.batchSize(), properties.claimTimeout());
+        // ① 確保(トランザクション1)
+        List<PspDispatchEventEntity> claimed = pspDispatchStore.claim(
+                properties.batchSize(), properties.claimTimeout());
 
-        // ② 送信 + ③ 結果記録
-        //    確保した各レコードについて:
-        //      - pspClient.authorize(...) を呼ぶ
-        //      - 正常終了なら markSent
-        //      - PspDispatchFailedException なら:
-        //          attempts が maxAttempts に達していれば markFailed(REQ-PSP-004)。
-        //          FAILED は終端で、以降は自動で再送されない。
-        //          まだ余地があれば scheduleRetry(id, now + backoffBase × 2^(attempts-1))。
-        //          待たずに行を手放し、バックオフが明けた周で再び確保される(REQ-NFR-002)。
-        //
-        //    ここでスリープしないこと。確保したまま待つと claimTimeout を超え、
-        //    処理中の行を他インスタンスが回収して二重に送信する(design.md §5.1)。
-        //
-        //    送信中の例外で周全体が止まらないよう、1件ずつ捕捉すること。
-        //    1件の失敗が残りの未送信レコードを巻き添えにしない。
+        for (PspDispatchEventEntity event : claimed) {
+            // TODO: ② 送信 + ③ 結果記録
+            try {
+                pspClient.authorize(event.dispatchEventId(), event.paymentId(), event.amount(), event.currency());
+                pspDispatchStore.markSent(event.dispatchEventId());
+            } catch (PspDispatchFailedException e) {
+                recordFailure(event);
+                log.warn("Failed to authorize error={}", e);
+            }
+        }
+    }
 
-        throw new UnsupportedOperationException("TODO: 走査・送信・結果記録(design.md §5.1)");
+    /**
+     * 送信に失敗した1件を記録する。トランザクション2にあたる。
+     *
+     * <p>
+     * attempts は確保時に加算済みなので、この値が「今回が何回目の送信だったか」を表す。
+     * maxAttempts に達していれば打ち切り、まだ余地があれば再送を予約する(REQ-PSP-004)。
+     */
+    private void recordFailure(PspDispatchEventEntity event) {
+        if (event.attempts() >= properties.maxAttempts()) {
+            pspDispatchStore.markFailed(event.dispatchEventId());
+            log.warn("試行上限に達したため送信を打ち切った dispatchEventId={} attempts={}/{}",
+                    event.dispatchEventId(), event.attempts(), properties.maxAttempts());
+        } else {
+            pspDispatchStore.scheduleRetry(event.dispatchEventId(), Instant.now().plus(backoff(event.attempts())));
+        }
+
+    }
+
+    /**
+     * REQ-NFR-002: n回目の失敗のあと backoffBase × 2^(n-1) だけ待つ。
+     * backoffBase=1s なら 1 → 2 → 4 → 8 秒。
+     */
+    private Duration backoff(short attempts) {
+        // TODO: properties.backoffBase() を 2^(attempts-1) 倍して返す
+        throw new UnsupportedOperationException("TODO: バックオフの計算(REQ-NFR-002)");
     }
 }
