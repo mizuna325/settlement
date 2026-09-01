@@ -179,7 +179,6 @@ class PspDispatchStore {
      */
     @Transactional
     void markFailed(UUID dispatchEventId) {
-        // TODO: status='FAILED' に更新する。markSent と同じ形なので、まとめても良い
         int updated = jdbcClient.sql("""
                 UPDATE payment_psp_dispatch_events
                 SET status = :failed

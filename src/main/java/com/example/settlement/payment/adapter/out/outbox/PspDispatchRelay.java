@@ -4,8 +4,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
-import javax.management.RuntimeErrorException;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -13,7 +11,6 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import com.example.settlement.payment.adapter.out.gateway.PspClient;
-import com.example.settlement.payment.adapter.out.gateway.PspDispatchFailedException;
 
 /**
  * Dispatch Outbox を走査し、未送信のレコードをPSPへ送る(REQ-PSP-002)。
@@ -62,13 +59,13 @@ class PspDispatchRelay {
                 properties.batchSize(), properties.claimTimeout());
 
         for (PspDispatchEventEntity event : claimed) {
-            // TODO: ② 送信 + ③ 結果記録
             try {
+                // ② 送信(トランザクション外)
                 pspClient.authorize(event.dispatchEventId(), event.paymentId(), event.amount(), event.currency());
+                // ③ 結果記録(トランザクション2)
                 pspDispatchStore.markSent(event.dispatchEventId());
-            } catch (PspDispatchFailedException e) {
-                recordFailure(event);
-                log.warn("Failed to authorize error={}", e);
+            } catch (RuntimeException e) {
+                recordFailure(event, e);
             }
         }
     }
@@ -79,24 +76,33 @@ class PspDispatchRelay {
      * <p>
      * attempts は確保時に加算済みなので、この値が「今回が何回目の送信だったか」を表す。
      * maxAttempts に達していれば打ち切り、まだ余地があれば再送を予約する(REQ-PSP-004)。
+     *
+     * <p>
+     * ログはここだけで出す。「打ち切るのか再送するのか」を知っているのはこのメソッドで、
+     * 呼び出し側でも出すと1回の失敗に対して2行出る。
+     * 打ち切りは自動で回復せず人手の対応が要るため ERROR、再送予約はいずれ解消するため WARN。
      */
-    private void recordFailure(PspDispatchEventEntity event) {
+    private void recordFailure(PspDispatchEventEntity event, RuntimeException cause) {
         if (event.attempts() >= properties.maxAttempts()) {
             pspDispatchStore.markFailed(event.dispatchEventId());
-            log.warn("試行上限に達したため送信を打ち切った dispatchEventId={} attempts={}/{}",
-                    event.dispatchEventId(), event.attempts(), properties.maxAttempts());
+            log.error("試行上限に達したため送信を打ち切った dispatchEventId={} attempts={}/{}",
+                    event.dispatchEventId(), event.attempts(), properties.maxAttempts(), cause);
         } else {
-            pspDispatchStore.scheduleRetry(event.dispatchEventId(), Instant.now().plus(backoff(event.attempts())));
+            Instant nextAttemptAt = Instant.now().plus(backoff(event.attempts()));
+            pspDispatchStore.scheduleRetry(event.dispatchEventId(), nextAttemptAt);
+            log.warn("PSPへの送信に失敗した。再送を予約した dispatchEventId={} attempts={}/{} nextAttemptAt={}",
+                    event.dispatchEventId(), event.attempts(), properties.maxAttempts(), nextAttemptAt, cause);
         }
-
     }
 
     /**
      * REQ-NFR-002: n回目の失敗のあと backoffBase × 2^(n-1) だけ待つ。
      * backoffBase=1s なら 1 → 2 → 4 → 8 秒。
+     *
+     * @param attempts 今回が何回目の送信だったか。確保時に加算済みのため 1 以上、
+     *                 かつ maxAttempts 未満であることを呼び出し側が保証する
      */
     private Duration backoff(short attempts) {
-        // TODO: properties.backoffBase() を 2^(attempts-1) 倍して返す
-        throw new UnsupportedOperationException("TODO: バックオフの計算(REQ-NFR-002)");
+        return properties.backoffBase().multipliedBy((long) Math.pow(2, attempts - 1));
     }
 }
