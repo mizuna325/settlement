@@ -1,6 +1,7 @@
 package com.example.settlement.payment.domain;
 
 import java.time.Instant;
+import java.time.Duration;
 
 import com.example.settlement.shared.Money;
 
@@ -64,5 +65,33 @@ public class Authorization {
 
     public Instant getExpiresAt() {
         return this.expiresAt;
+    }
+
+    private void transitionTo(AuthorizationStatus next) {
+        if (this.authorizationStatus.canTransitionTo(next)) {
+            this.authorizationStatus = next;
+        } else {
+            throw new IllegalStateException("the current AuthorizationStatus can not transition to " + next.toString());
+        }
+    }
+
+    void authorize(String pspReference, Instant authorizedAt, Duration validity) {
+        if (pspReference == null || pspReference.isBlank()) {
+            throw new IllegalArgumentException("pspReference cannot be null or empty");
+        }
+        if (authorizedAt == null) {
+            throw new IllegalArgumentException("authorizedAt cannot be null");
+        }
+        if (validity == null || validity.isZero() || validity.isNegative()) {
+            throw new IllegalArgumentException("validity cannot be null or zero, negative");
+        }
+        transitionTo(AuthorizationStatus.AUTHORIZED);
+        this.pspReference = pspReference;
+        this.authorizedAt = authorizedAt;
+        this.expiresAt = authorizedAt.plus(validity);
+    }
+
+    void decline() {
+        transitionTo(AuthorizationStatus.DECLINED);
     }
 }

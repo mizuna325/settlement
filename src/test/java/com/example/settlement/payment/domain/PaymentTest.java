@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -16,12 +17,21 @@ import com.example.settlement.shared.Money;
 
 class PaymentTest {
 
+    private static final Instant AUTHORIZED_AT = Instant.parse("2026-09-02T00:00:00Z");
+
+    /** REQ-NFR-005: 与信の有効期限は7日。設定値なのでドメインの外から渡す。 */
+    private static final Duration VALIDITY = Duration.ofDays(7);
+
     private static OrderId orderId() {
         return new OrderId(UUID.randomUUID());
     }
 
     private static Money jpy(long amount) {
         return new Money(amount, Currency.JPY);
+    }
+
+    private static Payment authorizing() {
+        return Payment.create(orderId(), jpy(1000));
     }
 
     @Test
@@ -120,5 +130,115 @@ class PaymentTest {
         assertEquals(PaymentStatus.AUTHORIZED, payment.getPaymentStatus());
         assertEquals("psp-ref-1", payment.getAuthorization().getPspReference());
         assertEquals(expiresAt, payment.getAuthorization().getExpiresAt());
+    }
+
+    @Test
+    @DisplayName("REQ-PAY-002: 与信成功で Payment と Authorization が AUTHORIZED になる")
+    void recordAuthorizationMovesBothToAuthorized() {
+        Payment payment = authorizing();
+
+        payment.recordAuthorization("psp-ref-1", AUTHORIZED_AT, VALIDITY);
+
+        assertEquals(PaymentStatus.AUTHORIZED, payment.getPaymentStatus());
+        assertEquals(AuthorizationStatus.AUTHORIZED, payment.getAuthorization().getAuthorizationStatus());
+    }
+
+    @Test
+    @DisplayName("REQ-PAY-002: 与信成功でPSP側の参照IDと与信日時が記録される")
+    void recordAuthorizationStoresPspResult() {
+        Payment payment = authorizing();
+
+        payment.recordAuthorization("psp-ref-1", AUTHORIZED_AT, VALIDITY);
+
+        assertEquals("psp-ref-1", payment.getAuthorization().getPspReference());
+        assertEquals(AUTHORIZED_AT, payment.getAuthorization().getAuthorizedAt());
+    }
+
+    @Test
+    @DisplayName("REQ-NFR-005: 有効期限は与信日時に有効期間を加えた時刻になる")
+    void expiresAtIsAuthorizedAtPlusValidity() {
+        Payment payment = authorizing();
+
+        payment.recordAuthorization("psp-ref-1", AUTHORIZED_AT, VALIDITY);
+
+        assertEquals(AUTHORIZED_AT.plus(VALIDITY), payment.getAuthorization().getExpiresAt());
+    }
+
+    @Test
+    @DisplayName("REQ-PAY-003: 与信拒否で Authorization が DECLINED、Payment が AUTH_DECLINED になる")
+    void declineAuthorizationMovesBothToDeclined() {
+        Payment payment = authorizing();
+
+        payment.declineAuthorization();
+
+        assertEquals(PaymentStatus.AUTH_DECLINED, payment.getPaymentStatus());
+        assertEquals(AuthorizationStatus.DECLINED, payment.getAuthorization().getAuthorizationStatus());
+    }
+
+    @Test
+    @DisplayName("REQ-PAY-003: 与信拒否では与信日時と有効期限を設定しない")
+    void declineAuthorizationLeavesTimestampsUnset() {
+        Payment payment = authorizing();
+
+        payment.declineAuthorization();
+
+        assertNull(payment.getAuthorization().getAuthorizedAt());
+        assertNull(payment.getAuthorization().getExpiresAt());
+    }
+
+    @Test
+    @DisplayName("確定済みの与信に同じ結果を再度適用することはできない")
+    void authorizationIsNotAppliedTwice() {
+        Payment payment = authorizing();
+        payment.recordAuthorization("psp-ref-1", AUTHORIZED_AT, VALIDITY);
+
+        assertThrows(IllegalStateException.class,
+                () -> payment.recordAuthorization("psp-ref-1", AUTHORIZED_AT, VALIDITY));
+    }
+
+    @Test
+    @DisplayName("拒否済みの与信を成功に覆すことはできない")
+    void declinedAuthorizationCannotBeAuthorized() {
+        Payment payment = authorizing();
+        payment.declineAuthorization();
+
+        assertThrows(IllegalStateException.class,
+                () -> payment.recordAuthorization("psp-ref-1", AUTHORIZED_AT, VALIDITY));
+    }
+
+    @Test
+    @DisplayName("成功済みの与信を拒否に覆すことはできない")
+    void authorizedAuthorizationCannotBeDeclined() {
+        Payment payment = authorizing();
+        payment.recordAuthorization("psp-ref-1", AUTHORIZED_AT, VALIDITY);
+
+        assertThrows(IllegalStateException.class, () -> payment.declineAuthorization());
+    }
+
+    @Test
+    @DisplayName("PSP側の参照IDのない与信成功は記録できない")
+    void authorizationWithoutPspReferenceIsRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> authorizing().recordAuthorization(null, AUTHORIZED_AT, VALIDITY));
+        assertThrows(IllegalArgumentException.class,
+                () -> authorizing().recordAuthorization(" ", AUTHORIZED_AT, VALIDITY));
+    }
+
+    @Test
+    @DisplayName("与信日時のない与信成功は記録できない")
+    void authorizationWithoutAuthorizedAtIsRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> authorizing().recordAuthorization("psp-ref-1", null, VALIDITY));
+    }
+
+    @Test
+    @DisplayName("有効期間が正でない与信成功は記録できない")
+    void authorizationWithNonPositiveValidityIsRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> authorizing().recordAuthorization("psp-ref-1", AUTHORIZED_AT, null));
+        assertThrows(IllegalArgumentException.class,
+                () -> authorizing().recordAuthorization("psp-ref-1", AUTHORIZED_AT, Duration.ZERO));
+        assertThrows(IllegalArgumentException.class,
+                () -> authorizing().recordAuthorization("psp-ref-1", AUTHORIZED_AT, Duration.ofDays(-1)));
     }
 }

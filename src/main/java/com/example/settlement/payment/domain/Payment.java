@@ -1,5 +1,8 @@
 package com.example.settlement.payment.domain;
 
+import java.time.Duration;
+import java.time.Instant;
+
 import com.example.settlement.shared.Money;
 
 public class Payment {
@@ -69,5 +72,24 @@ public class Payment {
 
     public Authorization getAuthorization() {
         return this.authorization;
+    }
+
+    private void transitionTo(PaymentStatus next) {
+        if (this.paymentStatus.canTransitionTo(next)) {
+            this.paymentStatus = next;
+            return;
+        }
+        throw new IllegalStateException("the current PaymentStatus can not transition to " + next.toString());
+    }
+
+    public void recordAuthorization(String pspReference, Instant authorizedAt, Duration validity) {
+        this.getAuthorization().authorize(pspReference, authorizedAt, validity);
+        transitionTo(PaymentStatus.AUTHORIZED);
+
+    }
+
+    public void declineAuthorization() {
+        this.getAuthorization().decline();
+        transitionTo(PaymentStatus.AUTH_DECLINED);
     }
 }
