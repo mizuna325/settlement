@@ -1,5 +1,6 @@
 package com.example.settlement;
 
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
 import org.junit.jupiter.api.DisplayName;
@@ -9,11 +10,7 @@ import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
 
-/**
- * design.md §7 の依存関係ルール。
- * onlyOrderMayImplementPaymentOutcomePort は PaymentOutcomePort の実装が現れるステップ3で追加する
- * (ArchUnit は対象が0件のルールを失敗として扱うため)。
- */
+/** design.md §7 の依存関係ルール。 */
 class ArchitectureTest {
 
     private static final JavaClasses classes = new ClassFileImporter()
@@ -57,6 +54,19 @@ class ArchitectureTest {
     void productionCodeMustNotDependOnPspSimulator() {
         noClasses().that().resideInAnyPackage("..order..", "..payment..", "..shared..")
                 .should().dependOnClassesThat().resideInAPackage("..pspsimulator..")
+                .check(classes);
+    }
+
+    /**
+     * payment 側の窓口を order 以外が塞がないことを守る。実装が増えると、payment の結果が
+     * どこへ流れるのかがDIの解決順でしか決まらなくなり、複数Beanで起動にも失敗する。
+     */
+    @Test
+    @DisplayName("PaymentOutcomePort を実装してよいのは order だけ")
+    void onlyOrderMayImplementPaymentOutcomePort() {
+        classes().that()
+                .implement("com.example.settlement.payment.application.port.out.PaymentOutcomePort")
+                .should().resideInAPackage("..order..")
                 .check(classes);
     }
 
