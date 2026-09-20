@@ -5,6 +5,7 @@ import org.springframework.stereotype.Component;
 import com.example.settlement.order.application.port.in.CancelOrderUseCase;
 import com.example.settlement.order.application.port.in.ConfirmOrderUseCase;
 import com.example.settlement.order.application.port.in.FailOrderSettlementUseCase;
+import com.example.settlement.order.application.port.in.RefundOrderUseCase;
 import com.example.settlement.order.application.port.in.SettleOrderUseCase;
 import com.example.settlement.order.domain.OrderId;
 import com.example.settlement.payment.application.port.out.PaymentAuthDeclined;
@@ -12,6 +13,7 @@ import com.example.settlement.payment.application.port.out.PaymentAuthorized;
 import com.example.settlement.payment.application.port.out.PaymentCaptureFailed;
 import com.example.settlement.payment.application.port.out.PaymentCaptured;
 import com.example.settlement.payment.application.port.out.PaymentOutcomePort;
+import com.example.settlement.payment.application.port.out.PaymentRefunded;
 
 /**
  * payment からの結果通知を order のUseCaseへ繋ぐ。
@@ -28,13 +30,16 @@ class PaymentOutcomeAdapter implements PaymentOutcomePort {
     private final CancelOrderUseCase cancelOrderUseCase;
     private final SettleOrderUseCase settleOrderUseCase;
     private final FailOrderSettlementUseCase failOrderSettlementUseCase;
+    private final RefundOrderUseCase refundOrderUseCase;
 
     PaymentOutcomeAdapter(ConfirmOrderUseCase confirmOrderUseCase, CancelOrderUseCase cancelOrderUseCase,
-            SettleOrderUseCase settleOrderUseCase, FailOrderSettlementUseCase failOrderSettlementUseCase) {
+            SettleOrderUseCase settleOrderUseCase, FailOrderSettlementUseCase failOrderSettlementUseCase,
+            RefundOrderUseCase refundOrderUseCase) {
         this.confirmOrderUseCase = confirmOrderUseCase;
         this.cancelOrderUseCase = cancelOrderUseCase;
         this.settleOrderUseCase = settleOrderUseCase;
         this.failOrderSettlementUseCase = failOrderSettlementUseCase;
+        this.refundOrderUseCase = refundOrderUseCase;
     }
 
     @Override
@@ -55,6 +60,11 @@ class PaymentOutcomeAdapter implements PaymentOutcomePort {
     @Override
     public void captureFailed(PaymentCaptureFailed event) {
         failOrderSettlementUseCase.failSettlement(orderIdOf(event.orderId()));
+    }
+
+    @Override
+    public void refunded(PaymentRefunded event) {
+        refundOrderUseCase.refund(orderIdOf(event.orderId()), event.fullyRefunded());
     }
 
     /** payment 側の OrderId は order 側とは別の型。ここが両者のモデルの境目になる。 */

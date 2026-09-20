@@ -9,4 +9,6 @@ public interface PaymentOutcomePort {
 
     void captureFailed(PaymentCaptureFailed event);
 
+    void refunded(PaymentRefunded event);
+
 }

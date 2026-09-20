@@ -2,6 +2,8 @@ package com.example.settlement.payment.domain;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 
 import com.example.settlement.shared.Money;
 
@@ -16,8 +18,11 @@ public class Payment {
     /** 0..1。与信成功まで存在しない。 */
     private Capture capture;
 
+    /** 0..n。部分返金を繰り返せるため、子エンティティの中で唯一コレクションになる。 */
+    private final List<Refund> refunds;
+
     private Payment(long version, PaymentId paymentId, OrderId orderId, Money amount, PaymentStatus paymentStatus,
-            Authorization authorization, Capture capture) {
+            Authorization authorization, Capture capture, List<Refund> refunds) {
         if (paymentId == null) {
             throw new IllegalArgumentException("paymentId must not be null.");
         }
@@ -40,18 +45,19 @@ public class Payment {
         this.paymentStatus = paymentStatus;
         this.authorization = authorization;
         this.capture = capture;
+        this.refunds = refunds == null ? new ArrayList<>() : new ArrayList<>(refunds);
     }
 
     /** 注文からの与信要求で決済を開始する(REQ-PAY-001)。 */
     public static Payment create(OrderId orderId, Money amount) {
         return new Payment(0, PaymentId.generate(), orderId, amount, PaymentStatus.AUTHORIZING,
-                Authorization.create(AuthorizationId.generate(), amount), null);
+                Authorization.create(AuthorizationId.generate(), amount), null, null);
     }
 
-    /** 永続化から復元する。capture は与信成功まで存在しないため null を取りうる。 */
+    /** 永続化から復元する。capture は与信成功まで、refunds は返金要求まで存在しない。 */
     public static Payment reconstruct(long version, PaymentId paymentId, OrderId orderId, Money amount,
-            PaymentStatus paymentStatus, Authorization authorization, Capture capture) {
-        return new Payment(version, paymentId, orderId, amount, paymentStatus, authorization, capture);
+            PaymentStatus paymentStatus, Authorization authorization, Capture capture, List<Refund> refunds) {
+        return new Payment(version, paymentId, orderId, amount, paymentStatus, authorization, capture, refunds);
     }
 
     public long getVersion() {
@@ -164,5 +170,101 @@ public class Payment {
             throw new IllegalStateException("no Capture has been requested.");
         }
         return this.capture;
+    }
+
+    // ---- 返金 ----
+
+    /** 読み取り専用。追加は requestRefund() を通す。 */
+    public List<Refund> getRefunds() {
+        return List.copyOf(this.refunds);
+    }
+
+    /**
+     * 返金をPSPへ依頼する(REQ-ORD-009)。
+     *
+     * @param amount      返金額。全額でも一部でもよい
+     * @param reason      返金の理由
+     * @param requestedAt 要求を受け付けた時刻
+     */
+    public void requestRefund(Money amount, RefundReason reason, Instant requestedAt) {
+        if (amount == null) {
+            throw new IllegalArgumentException("amount must not be null.");
+        }
+        // REQ-PAY-007: 売上確定が完了していなければ返金できない。受け取っていない金銭は戻せない。
+        if (this.capture == null || this.capture.getCaptureStatus() != CaptureStatus.CAPTURED) {
+            throw new IllegalStateException("the capture has not been completed.");
+        }
+        // REQ-PAY-010: 処理中の返金があるあいだは新たに依頼しない。
+        if (pendingRefund() != null) {
+            throw new IllegalStateException("a pending Refund already exists.");
+        }
+        // REQ-PAY-008: 確定済みと処理中を合わせた累計が売上確定額を超えられない。
+        // 処理中(PENDING)を含めるのは、結果待ちのあいだに超過する要求を通さないため。
+        if (committedRefundTotal().plus(amount).isGreaterThan(this.capture.getAmount())) {
+            throw new IllegalStateException("the refund total would exceed the captured amount.");
+        }
+        this.refunds.add(Refund.create(RefundId.generate(), amount, reason, requestedAt));
+        transitionTo(PaymentStatus.REFUNDING);
+    }
+
+    /**
+     * 返金完了のWebhookを受けて確定させる(REQ-PAY-009)。
+     *
+     * <p>
+     * 累計が売上確定額に達していれば REFUNDED、未満なら PARTIALLY_REFUNDED。
+     */
+    public void confirmRefund(String pspReference) {
+        requirePendingRefund().refund(pspReference);
+        transitionTo(refundedTotal().equals(requireCapture().getAmount())
+                ? PaymentStatus.REFUNDED
+                : PaymentStatus.PARTIALLY_REFUNDED);
+    }
+
+    /**
+     * 返金失敗のWebhookを受けて直前の状態へ戻す(REQ-PAY-011)。
+     *
+     * <p>
+     * 「直前の状態」を列として保持せず、確定済みの返金累計から導出する(design.md §3)。
+     * 累計が0なら一度も返金できていないので CAPTURED、0より大きければ PARTIALLY_REFUNDED。
+     */
+    public void failRefund() {
+        requirePendingRefund().fail();
+        transitionTo(refundedTotal().amount() == 0
+                ? PaymentStatus.CAPTURED
+                : PaymentStatus.PARTIALLY_REFUNDED);
+    }
+
+    /**
+     * 確定済みの返金累計(REQ-PAY-009 / REQ-PAY-011 が使う)。
+     *
+     * <p>
+     * REQ-PAY-008 の超過判定とは集計対象が異なる。あちらは処理中の返金も数える必要がある。
+     */
+    private Money refundedTotal() {
+        return this.refunds.stream()
+                .filter(Refund::isRefunded)
+                .map(Refund::getAmount)
+                .reduce(new Money(0, this.amount.unit()), Money::plus);
+    }
+
+    /** 確定済みと処理中を合わせた累計(REQ-PAY-008 の超過判定が使う)。 */
+    private Money committedRefundTotal() {
+        return this.refunds.stream()
+                .filter(refund -> refund.isRefunded() || refund.isPending())
+                .map(Refund::getAmount)
+                .reduce(new Money(0, this.amount.unit()), Money::plus);
+    }
+
+    /** REQ-PAY-010 により、処理中の返金はたかだか1件しか存在しない。 */
+    private Refund pendingRefund() {
+        return this.refunds.stream().filter(Refund::isPending).findFirst().orElse(null);
+    }
+
+    private Refund requirePendingRefund() {
+        Refund pending = pendingRefund();
+        if (pending == null) {
+            throw new IllegalStateException("no pending Refund exists.");
+        }
+        return pending;
     }
 }

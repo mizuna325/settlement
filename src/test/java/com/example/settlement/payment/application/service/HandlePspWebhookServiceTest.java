@@ -26,6 +26,7 @@ import com.example.settlement.payment.application.port.out.PaymentAuthDeclined;
 import com.example.settlement.payment.application.port.out.PaymentAuthorized;
 import com.example.settlement.payment.application.port.out.PaymentCaptureFailed;
 import com.example.settlement.payment.application.port.out.PaymentCaptured;
+import com.example.settlement.payment.application.port.out.PaymentRefunded;
 import com.example.settlement.payment.application.port.out.PaymentOutcomePort;
 import com.example.settlement.payment.application.port.out.PaymentRepository;
 import com.example.settlement.payment.application.port.out.WebhookEventStorePort;
@@ -33,6 +34,7 @@ import com.example.settlement.payment.domain.OrderId;
 import com.example.settlement.payment.domain.Payment;
 import com.example.settlement.payment.domain.PaymentId;
 import com.example.settlement.payment.domain.PaymentStatus;
+import com.example.settlement.payment.domain.RefundReason;
 import com.example.settlement.shared.Currency;
 import com.example.settlement.shared.Money;
 
@@ -267,6 +269,79 @@ class HandlePspWebhookServiceTest {
         authorizing();
 
         WebhookOutcome outcome = service.handle(captured(paymentId));
+
+        assertEquals(WebhookOutcome.NOT_APPLICABLE, outcome);
+        verify(paymentRepository, never()).save(any());
+        verifyNoInteractions(paymentOutcomePort);
+    }
+
+    // ---- 返金(ステップ5) ----
+
+    private static PspWebhookNotification refunded(PaymentId paymentId) {
+        return new PspWebhookNotification("evt-3", paymentId, PspWebhookStatus.REFUNDED, "psp-ref-r1");
+    }
+
+    private static PspWebhookNotification refundFailed(PaymentId paymentId) {
+        return new PspWebhookNotification("evt-3", paymentId, PspWebhookStatus.REFUND_FAILED, null);
+    }
+
+    /** 売上確定まで済み、返金をPSPへ依頼済みの状態(REFUNDING)。 */
+    private Payment refunding(long refundAmount) {
+        Payment payment = capturing();
+        payment.recordCapture("psp-cap-1", NOW);
+        payment.requestRefund(new Money(refundAmount, Currency.JPY), new RefundReason("顧客都合"), NOW);
+        return payment;
+    }
+
+    @Test
+    @DisplayName("REQ-ORD-006: 一部返金の完了では全額到達でないことを通知する")
+    void partialRefundNotifiesAsNotFullyRefunded() {
+        firstDelivery();
+        Payment payment = refunding(300);
+
+        WebhookOutcome outcome = service.handle(refunded(paymentId));
+
+        assertEquals(WebhookOutcome.APPLIED, outcome);
+        assertEquals(PaymentStatus.PARTIALLY_REFUNDED, payment.getPaymentStatus());
+        verify(paymentRepository).save(payment);
+        verify(paymentOutcomePort).refunded(new PaymentRefunded(orderId, false));
+    }
+
+    @Test
+    @DisplayName("REQ-ORD-006: 全額に達した返金では全額到達として通知する")
+    void fullRefundNotifiesAsFullyRefunded() {
+        firstDelivery();
+        Payment payment = refunding(1000);
+
+        service.handle(refunded(paymentId));
+
+        assertEquals(PaymentStatus.REFUNDED, payment.getPaymentStatus());
+        verify(paymentOutcomePort).refunded(new PaymentRefunded(orderId, true));
+    }
+
+    @Test
+    @DisplayName("REQ-PAY-011: 返金失敗では直前の状態へ戻し、注文側へは通知しない")
+    void failedRefundRestoresPreviousStateWithoutNotifying() {
+        firstDelivery();
+        Payment payment = refunding(300);
+
+        WebhookOutcome outcome = service.handle(refundFailed(paymentId));
+
+        assertEquals(WebhookOutcome.APPLIED, outcome);
+        assertEquals(PaymentStatus.CAPTURED, payment.getPaymentStatus());
+        verify(paymentRepository).save(payment);
+        // 返金が成立していないので注文の状態は変えない。
+        verifyNoInteractions(paymentOutcomePort);
+    }
+
+    @Test
+    @DisplayName("REQ-PSP-007: 返金を依頼していない決済への返金通知は NOT_APPLICABLE になる")
+    void refundedWebhookWithoutRequestIsNotApplicable() {
+        firstDelivery();
+        Payment payment = capturing();
+        payment.recordCapture("psp-cap-1", NOW);
+
+        WebhookOutcome outcome = service.handle(refunded(paymentId));
 
         assertEquals(WebhookOutcome.NOT_APPLICABLE, outcome);
         verify(paymentRepository, never()).save(any());

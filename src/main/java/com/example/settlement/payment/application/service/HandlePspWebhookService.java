@@ -18,9 +18,11 @@ import com.example.settlement.payment.application.port.out.PaymentAuthorized;
 import com.example.settlement.payment.application.port.out.PaymentCaptureFailed;
 import com.example.settlement.payment.application.port.out.PaymentCaptured;
 import com.example.settlement.payment.application.port.out.PaymentOutcomePort;
+import com.example.settlement.payment.application.port.out.PaymentRefunded;
 import com.example.settlement.payment.application.port.out.PaymentRepository;
 import com.example.settlement.payment.application.port.out.WebhookEventStorePort;
 import com.example.settlement.payment.domain.Payment;
+import com.example.settlement.payment.domain.PaymentStatus;
 
 @Service
 class HandlePspWebhookService implements HandlePspWebhookUseCase {
@@ -90,6 +92,18 @@ class HandlePspWebhookService implements HandlePspWebhookUseCase {
                     payment.failCapture();
                     paymentRepository.save(payment);
                     paymentOutcomePort.captureFailed(new PaymentCaptureFailed(payment.getOrderId()));
+                }
+                case REFUNDED -> {
+                    payment.confirmRefund(notification.pspReference());
+                    paymentRepository.save(payment);
+                    // REQ-ORD-006: 全額に達したかで注文の進み先が変わる。判断材料は集約が持つ。
+                    paymentOutcomePort.refunded(new PaymentRefunded(payment.getOrderId(),
+                            payment.getPaymentStatus() == PaymentStatus.REFUNDED));
+                }
+                case REFUND_FAILED -> {
+                    // REQ-PAY-011: 直前の状態へ戻す。注文側は変えない(返金が成立していないため)。
+                    payment.failRefund();
+                    paymentRepository.save(payment);
                 }
             }
             return WebhookOutcome.APPLIED;

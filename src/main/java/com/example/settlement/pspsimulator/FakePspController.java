@@ -65,6 +65,23 @@ class FakePspController {
         return ResponseEntity.accepted().build();
     }
 
+    /**
+     * REQ-SIM-001: 返金も 202 のみを返し、可否はWebhookで通知する。
+     */
+    @PostMapping("/refund")
+    ResponseEntity<Void> refund(@RequestHeader("Idempotency-Key") UUID idempotencyKey,
+            @RequestBody PspOperationRequest request) {
+
+        if (isDuplicate(idempotencyKey)) {
+            return ResponseEntity.accepted().build();
+        }
+
+        log.info("返金要求を受け付けた key={} paymentId={} amount={} {}",
+                idempotencyKey, request.paymentId(), request.amount(), request.currency());
+        webhookDispatcher.dispatchRefundResult(request.paymentId(), request.amount());
+        return ResponseEntity.accepted().build();
+    }
+
     /** REQ-SIM-005: 受付済みのキーなら新たな処理を行わない。 */
     private boolean isDuplicate(UUID idempotencyKey) {
         if (idempotencyKeyStore.registerIfAbsent(idempotencyKey, Instant.now())) {

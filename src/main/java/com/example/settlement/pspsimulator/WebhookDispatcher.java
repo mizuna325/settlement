@@ -60,6 +60,14 @@ class WebhookDispatcher {
         dispatch(paymentId, (amount % 100 == 98) ? "CAPTURE_FAILED" : "CAPTURED");
     }
 
+    /**
+     * 返金の可否。要件に定めがないため、与信・売上確定と同じ形で金額の下2桁を使う
+     * (97 なら失敗)。ランダムにしないのは、E2Eテストの再現性を保つため。
+     */
+    void dispatchRefundResult(UUID paymentId, long amount) {
+        dispatch(paymentId, (amount % 100 == 97) ? "REFUND_FAILED" : "REFUNDED");
+    }
+
     private void dispatch(UUID paymentId, String status) {
         // eventId と pspReference はPSPが採番するもの。送信ごとに新しい値になる。
         String body = """

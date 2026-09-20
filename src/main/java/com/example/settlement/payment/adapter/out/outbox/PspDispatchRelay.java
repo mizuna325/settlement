@@ -85,7 +85,8 @@ class PspDispatchRelay {
                 pspClient.authorize(event.dispatchEventId(), event.paymentId(), event.amount(), event.currency());
             case CAPTURE ->
                 pspClient.capture(event.dispatchEventId(), event.paymentId(), event.amount(), event.currency());
-            case REFUND -> throw new UnsupportedOperationException("REFUND はステップ5で実装する");
+            case REFUND ->
+                pspClient.refund(event.dispatchEventId(), event.paymentId(), event.amount(), event.currency());
         }
     }
 

@@ -19,6 +19,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.client.RestClient;
@@ -49,12 +50,18 @@ import com.example.settlement.shared.Money;
  * <p>
  * 遅延は 1秒固定にしている。0にすると「同期的に送っていない」ことを確かめられず、
  * 既定の 1〜5秒のままだとテストが無駄に長くなる。
+ *
+ * <p>
+ * クラス終了時に {@code @DirtiesContext} でコンテキストを閉じる。送信は TaskScheduler の
+ * スレッドで走るため、コンテキストが生き残ると予約済みの送信が後続のテスト中に発火し、
+ * 同じ決済の行を掴んで他のテストを待たせることがある。
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT, properties = {
         "settlement.pspsimulator.webhook-delay-min=1s",
         "settlement.pspsimulator.webhook-delay-max=1s",
         "settlement.psp.webhook-secret=test-secret",
         "settlement.pspsimulator.webhook-secret=test-secret" })
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class WebhookDispatcherTest {
 
     /** 固定の8080だと開発中のアプリと衝突するため、空きポートを取ってから起動する。 */

@@ -46,6 +46,11 @@ public class PspClient {
         send("/psp/capture", dispatchEventId, paymentId, amount, currency);
     }
 
+    /** 返金をPSPへ送信する。結果はWebhookで届く。 */
+    public void refund(UUID dispatchEventId, UUID paymentId, long amount, String currency) {
+        send("/psp/refund", dispatchEventId, paymentId, amount, currency);
+    }
+
     private void send(String path, UUID dispatchEventId, UUID paymentId, long amount, String currency) {
         try {
             restClient.post()

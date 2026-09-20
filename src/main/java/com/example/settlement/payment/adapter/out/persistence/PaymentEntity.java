@@ -1,5 +1,6 @@
 package com.example.settlement.payment.adapter.out.persistence;
 
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.data.annotation.Id;
@@ -23,7 +24,8 @@ record PaymentEntity(@Id UUID paymentId,
         String currency,
         String status,
         @MappedCollection(idColumn = "payment_id") AuthorizationEntity authorization,
-        @MappedCollection(idColumn = "payment_id") CaptureEntity capture) {
+        @MappedCollection(idColumn = "payment_id") CaptureEntity capture,
+        @MappedCollection(idColumn = "payment_id", keyColumn = "refund_index") List<RefundEntity> refunds) {
 
     static PaymentEntity from(Payment payment) {
         return new PaymentEntity(
@@ -34,7 +36,8 @@ record PaymentEntity(@Id UUID paymentId,
                 payment.getAmount().unit().name(),
                 payment.getPaymentStatus().name(),
                 AuthorizationEntity.from(payment.getAuthorization()),
-                CaptureEntity.from(payment.getCapture()));
+                CaptureEntity.from(payment.getCapture()),
+                payment.getRefunds().stream().map(RefundEntity::from).toList());
     }
 
     Payment toDomain() {
@@ -45,6 +48,7 @@ record PaymentEntity(@Id UUID paymentId,
                 new Money(amount, Currency.valueOf(currency)),
                 PaymentStatus.valueOf(status),
                 authorization.toDomain(),
-                capture == null ? null : capture.toDomain());
+                capture == null ? null : capture.toDomain(),
+                refunds.stream().map(RefundEntity::toDomain).toList());
     }
 }

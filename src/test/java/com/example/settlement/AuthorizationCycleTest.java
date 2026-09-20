@@ -98,6 +98,7 @@ class AuthorizationCycleTest {
         jdbcClient.sql("DELETE FROM payment_webhook_events").update();
         jdbcClient.sql("DELETE FROM payment_psp_idempotency_keys").update();
         jdbcClient.sql("DELETE FROM payment_psp_dispatch_events").update();
+        jdbcClient.sql("DELETE FROM payment_refunds").update();
         jdbcClient.sql("DELETE FROM payment_captures").update();
         jdbcClient.sql("DELETE FROM payment_authorizations").update();
         jdbcClient.sql("DELETE FROM payments").update();
@@ -178,6 +179,74 @@ class AuthorizationCycleTest {
         assertEquals("CAPTURED", paymentStatusOf(orderId));
         // 与信と売上確定でWebhookは2通届く。
         assertEquals(2L, webhookEventCount());
+    }
+
+    /** REQ-ORD-009: 返金を要求する。受け付けは 202 で、成立はWebhook到達後。 */
+    private void requestRefund(UUID orderId, long amount) throws Exception {
+        mockMvc.perform(post("/orders/" + orderId + "/refunds")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"amount": %d, "currency": "JPY", "reason": "顧客都合"}
+                        """.formatted(amount)))
+                .andExpect(status().isAccepted());
+    }
+
+    @Test
+    @DisplayName("REQ-ORD-006: 一部返金で注文が PARTIALLY_REFUNDED まで自動で進む")
+    void partialRefundReachesPartiallyRefunded() throws Exception {
+        UUID orderId = placeOrder(1000);
+        awaitOrderStatus(orderId, "SETTLED");
+
+        requestRefund(orderId, 300);
+
+        awaitOrderStatus(orderId, "PARTIALLY_REFUNDED");
+        assertEquals("PARTIALLY_REFUNDED", paymentStatusOf(orderId));
+    }
+
+    @Test
+    @DisplayName("REQ-ORD-006: 部分返金を積み上げて全額に達すると REFUNDED になる")
+    void refundsAccumulateUntilFullyRefunded() throws Exception {
+        UUID orderId = placeOrder(1000);
+        awaitOrderStatus(orderId, "SETTLED");
+
+        requestRefund(orderId, 400);
+        awaitOrderStatus(orderId, "PARTIALLY_REFUNDED");
+
+        requestRefund(orderId, 600);
+        awaitOrderStatus(orderId, "REFUNDED");
+        assertEquals("REFUNDED", paymentStatusOf(orderId));
+    }
+
+    @Test
+    @DisplayName("REQ-PAY-008: 売上確定額を超える返金要求は受け付けられない")
+    void refundExceedingTheCapturedAmountIsRejected() throws Exception {
+        UUID orderId = placeOrder(1000);
+        awaitOrderStatus(orderId, "SETTLED");
+
+        // 集約が弾くため 409。GlobalExceptionHandler が IllegalStateException を変換する。
+        mockMvc.perform(post("/orders/" + orderId + "/refunds")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"amount": 1001, "currency": "JPY", "reason": "顧客都合"}
+                        """))
+                .andExpect(status().isConflict());
+
+        assertEquals("SETTLED", orderStatusOf(orderId));
+        assertEquals("CAPTURED", paymentStatusOf(orderId));
+    }
+
+    @Test
+    @DisplayName("REQ-PAY-007: 売上確定が終わっていない注文は返金できない")
+    void refundBeforeSettlementIsRejected() throws Exception {
+        UUID orderId = placeOrder(1099); // 与信が拒否される金額
+        awaitOrderStatus(orderId, "CANCELLED");
+
+        mockMvc.perform(post("/orders/" + orderId + "/refunds")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"amount": 100, "currency": "JPY", "reason": "顧客都合"}
+                        """))
+                .andExpect(status().isConflict());
     }
 
     @Test

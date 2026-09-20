@@ -12,5 +12,7 @@ public enum PspWebhookStatus {
     AUTHORIZED,
     DECLINED,
     CAPTURED,
-    CAPTURE_FAILED
+    CAPTURE_FAILED,
+    REFUNDED,
+    REFUND_FAILED
 }
