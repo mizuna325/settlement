@@ -73,16 +73,21 @@ com.example.settlement
 │   │                            # OrderStatus
 │   │                            # ※Moneyはshared.Moneyをimportして使う(orderで再定義しない)
 │   ├── application
-│   │   ├── port.in              # CreateOrderUseCase, ConfirmOrderUseCase, CancelOrderUseCase,
-│   │   │                        # SettleOrderUseCase, RefundOrderUseCase
+│   │   ├── port.in              # 顧客起点: CreateOrderUseCase, RequestRefundUseCase
+│   │   │                        # 結果の反映: ConfirmOrderUseCase, CancelOrderUseCase,
+│   │   │                        #   SettleOrderUseCase, FailOrderSettlementUseCase, RefundOrderUseCase
+│   │   │                        # ※前者はWebから、後者は PaymentOutcomeAdapter から呼ばれる
 │   │   ├── port.out             # OrderRepository(※集約ルート経由でのみ入出力)
-│   │   └── service              # CreateOrderService（内部でpaymentのUseCaseを直接呼ぶ）,
-│   │                            # ConfirmOrderService, CancelOrderService
+│   │   └── service              # CreateOrderService / RequestRefundService
+│   │                            #   (内部でpaymentのUseCaseを直接呼ぶ),
+│   │                            # ConfirmOrderService, CancelOrderService, SettleOrderService,
+│   │                            # FailOrderSettlementService, RefundOrderService
 │   │                            # ※集約のロードと保存、トランザクション境界はここが持つ。
 │   │                            #   PaymentOutcomeAdapter はIDの詰め替えと委譲だけに留める
 │   └── adapter
 │       ├── in                   # orderを駆動する側
-│       │   ├── web              # OrderController, DTO, GlobalExceptionHandler
+│       │   ├── web              # OrderController(POST /orders, POST /orders/{id}/refunds),
+│       │   │                    # DTO, GlobalExceptionHandler
 │       │   └── eventing         # PaymentOutcomeAdapter implements PaymentOutcomePort
 │       │                        # （paymentからの結果通知を受けてorderのUseCaseを呼ぶ）
 │       └── out                  # orderが依頼する側
@@ -99,7 +104,9 @@ com.example.settlement
 │   ├── application              # AuthorizationProperties(settlement.psp.authorization-validity のバインド先。
 │   │   │                        #   読み手がapplication層のため、adapter配下の既存レコードには置けない)
 │   │   ├── port.in              # AuthorizePaymentUseCase, RefundPaymentUseCase
-│   │   │                        # ↑ orderから直接呼ばれる入口はこの2つのみ
+│   │   │                        # ↑ orderから直接呼ばれる入口はこの2つのみ。
+│   │   │                        #   返金は注文IDを起点に届くため、決済の特定は payment 側で行う
+│   │   │                        #   (RefundPaymentUseCase#refund(OrderId, Money, RefundReason))
 │   │   │                        # HandlePspWebhookUseCase(Webhookの入口から呼ばれる)と、
 │   │   │                        #   その引数・戻り値の PspWebhookNotification / PspWebhookStatus / WebhookOutcome
 │   │   ├── port.out             # PaymentOutcomePort（← orderモジュールが依存してよい唯一の公開interface）,
@@ -165,7 +172,8 @@ com.example.settlement
 - 状態はすべてJavaのenumとして定義し、遷移の可否はenum自身または集約のメソッドで判定する。文字列比較で分岐させない
 - ドメインモデルにはフレームワークのアノテーションを付けない(§7)。`@Id`や`@MappedCollection`を伴う永続化専用モデルは`adapter.out.persistence`に別途置き、リポジトリ実装が集約との相互変換を担う
 - 楽観ロックのため、集約ルートはアノテーションを持たない`long version`を保持する。`@Version`が付くのは永続化モデル側。Spring Data JDBCでは子エンティティのバージョンは扱えないため、`Payment`集約ルートにのみ持たせる
-- リポジトリ実装は、読み込み時と保存後の双方でバージョンを集約へ書き戻す。Spring Data JDBCは`save()`が返すインスタンスにのみバージョンを加算し、またその値でINSERT/UPDATEを判定するため、書き戻しを怠ると既存集約の保存がINSERTとして発行される
+- リポジトリ実装は、読み込み時と保存後の双方でバージョンを集約へ書き戻す(`Payment#applyPersistedVersion`)。Spring Data JDBCは`save()`が返すインスタンスにのみバージョンを加算し、またその値でINSERT/UPDATEを判定するため、書き戻しを怠ると既存集約の保存がINSERTとして発行される。
+  - **同一トランザクション内で同じ集約を2回保存する経路で顕在化する。** 与信成功をそのまま売上確定へ進める箇所(REQ-PAY-004)がこれにあたり、書き戻しがないと2回目が古いバージョンで更新を試みて楽観ロックに失敗する
 - REQ-PAY-011の「直前の状態」は返金累計額から導出する(累計が0なら`CAPTURED`、0より大きければ`PARTIALLY_REFUNDED`)。直前の状態を保持する列は設けない。この累計は`RefundStatus.REFUNDED`の子のみを対象とする。REQ-PAY-008の超過判定では`PENDING`の返金も含める必要があるため、両者で集計対象が異なる
 
 ### 不変条件の置き場所
@@ -281,6 +289,15 @@ erDiagram
 
 カラム定義・制約・インデックスはマイグレーションファイル自体を仕様とする(二重管理を避ける)。上図に載せているのは主キーと関連のみ。`order`側にはOutboxテーブルを持たない。
 
+| マイグレーション | 追加するもの | 実装したステップ |
+|---|---|---|
+| `V1__init` | `orders` / `order_lines` / `payments` / `payment_authorizations` / `payment_psp_dispatch_events` | 1 |
+| `V2__psp_idempotency_keys` | `payment_psp_idempotency_keys` | 2 |
+| `V3__psp_dispatch_next_attempt_at` | `next_attempt_at` 列(バックオフ) | 2 |
+| `V4__payment_webhook_events` | `payment_webhook_events` | 3 |
+| `V5__payment_captures` | `payment_captures` | 4 |
+| `V6__payment_refunds` | `payment_refunds` | 5 |
+
 ---
 
 ## 4. 処理フローとコンポーネント間の呼び出し
@@ -372,9 +389,10 @@ sequenceDiagram
   participant Relay as PspDispatchRelay
   participant PSP as 外部PSP(スタブ)
 
-  O->>P: RefundPaymentUseCase.handle(paymentId, amount, reason)
+  O->>P: RefundPaymentUseCase.refund(orderId, amount, reason)
   rect rgba(168,98,44,0.08)
-  P->>P: 不変条件チェック(REQ-PAY-007/008) → Refund(PENDING)追加 → REFUNDING
+  P->>P: orderId から決済を引く
+  P->>P: 不変条件チェック(REQ-PAY-007/008/010) → Refund(PENDING)追加 → REFUNDING
   P->>OB: INSERT PspDispatchEvent(refund)
   end
   Relay->>OB: ポーリング
@@ -383,10 +401,29 @@ sequenceDiagram
   PSP->>P: POST /payment/webhook {status: REFUNDED, eventId}
   rect rgba(168,98,44,0.08)
   P->>P: Payment.confirmRefund() → REFUNDED / PARTIALLY_REFUNDED
-  P->>O: PaymentOutcomePort.refunded(orderId, isFull)
+  P->>O: PaymentOutcomePort.refunded(orderId, fullyRefunded)
   O->>O: Order.refund() → REFUNDED / PARTIALLY_REFUNDED
   end
 ```
+
+`POST /orders/{id}/refunds` は `202 Accepted` を返す。受け付けた時点ではPSPへ依頼しただけで、返金は成立していない。注文が進むのはWebhook到達後(REQ-ORD-006)。
+
+**返金失敗では注文側へ通知しない。** `Payment`は直前の状態へ戻る(REQ-PAY-011)が、`Order`は`SETTLED`/`PARTIALLY_REFUNDED`のまま動かない。返金が成立していない以上、注文から見れば何も起きていないため。
+
+### 返金だけが持つ難しさ
+
+与信と売上確定は子エンティティが0..1で、状態遷移も一方向だった。返金は0..nのコレクションになり、2点が変わる。
+
+**同じ「累計」でも集計対象が2つある。**
+
+| 用途 | 対象 | 理由 |
+|---|---|---|
+| 超過判定(REQ-PAY-008) | `REFUNDED` + `PENDING` | 結果待ちのあいだに超過する要求を通さないため |
+| 直前の状態の導出(REQ-PAY-011) | `REFUNDED` のみ | 成立していない返金は「返した金額」ではないため |
+
+**直前の状態を列で持たない。** 返金失敗時に`CAPTURED`と`PARTIALLY_REFUNDED`のどちらへ戻るかは、確定済み累計が0かどうかで導出する(§3)。状態を二重に持つと、集約の状態と子の状態が食い違う余地が生まれる。
+
+**処理中の返金はたかだか1件。** REQ-PAY-010が保証するため、返金完了のWebhookは「唯一のPENDINGな`Refund`」に適用すればよく、どの返金への通知かをペイロードで識別する必要がない。
 
 ---
 
@@ -409,7 +446,14 @@ sequenceDiagram
   - 適用できなかった理由を持つのは、集約の更新を試みて`IllegalStateException`を受け取った`HandlePspWebhookService`だけなので、WARNログはそこで出す。Controllerまで上がるのは3値の1つでしかなく、どの状態に何が届いたかを書けない。
 - **適用できないWebhook**: 現在の状態に適用できない通知を受けた場合も、状態を変えずに`200 OK`を返す(REQ-PSP-007)。エラーを返すとPSPが再送を繰り返すため。
 - **素早くACKする**: `PspWebhookController`は署名検証・冪等チェック・状態更新までを1トランザクションで完結させ、重い処理を後回しにしない。
-- **`pspsimulator`**: 全エンドポイントで`202 Accepted`のみを返し、結果は`WebhookDispatcher`が遅延送信する。可否判定は金額に基づくルールで行う(REQ-SIM-003/004)。ランダムにするとE2Eテストが不安定になるため。
+- **`pspsimulator`**: 全エンドポイントで`202 Accepted`のみを返し、結果は`WebhookDispatcher`が遅延送信する。可否判定は金額に基づくルールで行う。ランダムにするとE2Eテストが不安定になるため。
+
+  | 操作 | 失敗する金額の下2桁 | 根拠 |
+  |---|---|---|
+  | 与信 | `99` | REQ-SIM-003 |
+  | 売上確定 | `98` | REQ-SIM-004 |
+  | 返金 | `97` | 要件に定めがないため、上2つと同じ形に揃えた |
+
 - **遅延送信は`TaskScheduler`で行う**: `schedule(Runnable, Instant)`は時刻ベースなので、待機中にスレッドを消費しない。`@Async`と`Thread.sleep`の組み合わせは待っているあいだプールを占有するため使わない。スケジューラが`Runnable`の例外を握り潰す点に注意し、送信処理は自前で捕まえて記録する。
 - **手動再送**(REQ-SIM-007): 送信した本文を決済ごとにメモリ(`ConcurrentHashMap`)へ保持し、`POST /psp/webhooks/resend/{paymentId}`で送り直す。**本文はそのまま送る**ため`eventId`が変わらず、受信側では重複として弾かれる。これが受信側の冪等性(REQ-PSP-006)を実演する手段になる。署名の`t`だけは送信のたびに取り直す。原本の値を使い回すと、許容時間を過ぎた再送が自分の署名で弾かれるため。
 
