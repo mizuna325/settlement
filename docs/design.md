@@ -49,7 +49,7 @@ graph TB
     PA -- "② PaymentOutcomePort呼び出し(同一Tx)" --> OL
     PO -- "③ @Scheduled Relay" --> RELAY["PspDispatchRelay"]
   end
-  SH["shared<br/>Money / Currency / ClockPort / CorrelationId"]
+  SH["shared<br/>Money / Currency / CorrelationId"]
   OD -. "import" .-> SH
   PD -. "import" .-> SH
   OI --> DB[("PostgreSQL")]
@@ -76,7 +76,10 @@ com.example.settlement
 │   │   ├── port.in              # CreateOrderUseCase, ConfirmOrderUseCase, CancelOrderUseCase,
 │   │   │                        # SettleOrderUseCase, RefundOrderUseCase
 │   │   ├── port.out             # OrderRepository(※集約ルート経由でのみ入出力)
-│   │   └── service              # CreateOrderService（内部でpaymentのUseCaseを直接呼ぶ）
+│   │   └── service              # CreateOrderService（内部でpaymentのUseCaseを直接呼ぶ）,
+│   │                            # ConfirmOrderService, CancelOrderService
+│   │                            # ※集約のロードと保存、トランザクション境界はここが持つ。
+│   │                            #   PaymentOutcomeAdapter はIDの詰め替えと委譲だけに留める
 │   └── adapter
 │       ├── in                   # orderを駆動する側
 │       │   ├── web              # OrderController, DTO, GlobalExceptionHandler
@@ -93,9 +96,12 @@ com.example.settlement
 │   │                            # ※OrderIdはpayment側で独自に定義する(order.domain.OrderIdとは別の型)。
 │   │                            # 決済は注文を単なる参照としてしか扱わないため(UL §5)
 │   │                            # ※Moneyはshared.Moneyをimportして使う
-│   ├── application
+│   ├── application              # AuthorizationProperties(settlement.psp.authorization-validity のバインド先。
+│   │   │                        #   読み手がapplication層のため、adapter配下の既存レコードには置けない)
 │   │   ├── port.in              # AuthorizePaymentUseCase, RefundPaymentUseCase
 │   │   │                        # ↑ orderから直接呼ばれる入口はこの2つのみ
+│   │   │                        # HandlePspWebhookUseCase(Webhookの入口から呼ばれる)と、
+│   │   │                        #   その引数・戻り値の PspWebhookNotification / PspWebhookStatus / WebhookOutcome
 │   │   ├── port.out             # PaymentOutcomePort（← orderモジュールが依存してよい唯一の公開interface）,
 │   │   │                        # PaymentAuthorized/AuthDeclined/Captured/CaptureFailed/Refunded
 │   │   │                        #   （PaymentOutcomePortの引数となるレコード）,
@@ -107,23 +113,29 @@ com.example.settlement
 │   └── adapter
 │       ├── in                     # paymentを駆動する側
 │       │   ├── web                # PaymentController(照会用), GlobalExceptionHandler
-│       │   └── webhook             # PspWebhookController(署名検証・eventId冪等チェック)
+│       │   └── webhook             # PspWebhookController(署名検証), PspWebhookRequest(受信DTO。
+│       │                           #   フィールド定義をもってWebhookのスキーマ仕様とする), WebhookProperty
 │       └── out                    # paymentが依頼する側
 │           ├── persistence         # 永続化専用モデル(Payment集約丸ごと) + マッパー + Repository実装
 │           ├── outbox               # PspDispatchEventEntity, PspDispatchStatus,
 │           │                        # PspDispatchQueueAdapter(PspDispatchQueuePortの実装),
 │           │                        # PspDispatchRelay(@Scheduled), PspDispatchStore, PspDispatchProperties
 │           ├── gateway               # PspClient(RestClient)。PspDispatchRelayが送信に使う
-│           └── idempotency            # WebhookEventJdbcStore(受信側の冪等性)
+│           └── idempotency            # WebhookEventJdbcStore(受信側の冪等性),
+│                                      # WebhookEventCleaner(@Scheduled。REQ-NFR-007), WebhookEventProperty
 │
-├── shared                          # Money, Currency, ClockPort, CorrelationId。orderとpaymentが共有するShared Kernel。
+├── shared                          # Money, Currency, CorrelationId。orderとpaymentが共有するShared Kernel。
 │                                    # 業務ロジックは持たず、通貨計算等の普遍的な不変条件のみを持つ。
 │                                    # ArchUnitで「sharedはorder/paymentに依存しない」ことを検証する(§7)
 │
 ├── pspsimulator                     # 演習用: 外部PSPを模したスタブ(実プロダクトなら別リポジトリ/別サービス)
 │   ├── FakePspController             # /psp/authorize /psp/capture /psp/refund → 即座に202 Acceptedを返す
+│   │                                 # 手動再送の入口 /psp/webhooks/resend/{paymentId} もここ(REQ-SIM-007)
 │   ├── PspIdempotencyKeyStore         # PSP側の冪等性キーストア([ADR-0002](./adr/0002-idempotency-key-store-on-psp-side.md))
-│   └── WebhookDispatcher              # 別スレッド/遅延実行で settlement アプリへWebhookをPOSTする
+│   ├── PspIdempotencyKeyCleaner       # @Scheduled。保持期間を過ぎたキーを削除する(REQ-NFR-006)
+│   ├── PspSimulatorProperty           # settlement.pspsimulator.* のバインド先
+│   └── WebhookDispatcher              # TaskSchedulerによる遅延実行で settlement アプリへWebhookをPOSTする。
+│                                      # 手動再送のため、送信した本文を決済ごとにメモリに保持する
 │
 └── SettlementApplication.java
 ```
@@ -384,11 +396,22 @@ sequenceDiagram
 - **ディスパッチの走査と送信**: 詳細は§5.1。
 - **送信失敗時**: 指数バックオフで再送し、上限(REQ-NFR-002)を超えたレコードは`FAILED`として送信を止める。
 - **送信側の冪等性**: `Idempotency-Key`にはディスパッチレコードのIDをそのまま用い、リトライ時も同じ値を送る。settlement側にキーは記録しない。受付済みキーの判定はPSP側の責務であり、`payment_psp_idempotency_keys`は`pspsimulator`が読み書きする([ADR-0002](./adr/0002-idempotency-key-store-on-psp-side.md))。
-- **署名検証**: Webhookの共有シークレットによるHMAC署名ヘッダーを`PspWebhookController`で検証する。
-- **受信側の冪等性**: Webhookペイロードの`eventId`を`payment_webhook_events`に記録し、UNIQUE制約で二重処理を防ぐ。
+- **署名検証**: Webhookの共有シークレットによるHMAC署名ヘッダーを`PspWebhookController`で検証する。形式は`X-Psp-Signature: t=<epoch秒>,v1=<hex64>`で、署名対象は`t + "." + リクエストボディ`。時刻を署名に含めることで、盗まれた署名の再利用を許容時間の経過で無効化する。`v1`はアルゴリズムを変更する際に併記して移行するための版番号。
+  - **ボディは解釈前の文字列のまま検証する**。`@RequestBody String`で受け、検証を通してから`ObjectMapper`でDTOへ変換する。パースして再度シリアライズすると、キーの順序・空白・未知のフィールドの欠落でバイト列が変わり、署名が一致しない。
+  - **突き合わせは`MessageDigest.isEqual`で行う**。`String.equals`は不一致の位置で比較を打ち切るため、応答時間の差から正しい署名を絞り込める余地が残る。
+- **受信側の冪等性**: Webhookペイロードの`eventId`を`payment_webhook_events`に記録し、UNIQUE制約で二重処理を防ぐ。判定は集約を更新する前に行い、挿入できた側だけが処理権を得る。先に集約を更新すると、同時に届いた2つが両方とも更新に進む余地が生まれる。
+- **Webhookのペイロード**: `PspWebhookRequest`のフィールド定義をもって仕様とする([requirements.md §7](./requirements.md))。
+  ```json
+  {"eventId":"evt-…","paymentId":"<uuid>","pspReference":"psp-…","status":"AUTHORIZED"}
+  ```
+  `status`は`AUTHORIZED`または`DECLINED`。`pspReference`は`null`を許容する(拒否時は記録しないため)。「与信成功には参照IDが必要」という規則は`Payment`集約が持つので、受信DTO側では検証しない(§3)。
+- **応答は200と401の2種類のみ**: 署名検証に失敗した場合だけ`401`を返し、それ以外は適用できたか・重複か・適用できなかったかによらず`200`を返す。エラーを返すとPSPが再送を繰り返すため。3つの結末は`WebhookOutcome`(`APPLIED` / `DUPLICATE` / `NOT_APPLICABLE`)として`HandlePspWebhookUseCase`の戻り値に現れる。
+  - 適用できなかった理由を持つのは、集約の更新を試みて`IllegalStateException`を受け取った`HandlePspWebhookService`だけなので、WARNログはそこで出す。Controllerまで上がるのは3値の1つでしかなく、どの状態に何が届いたかを書けない。
 - **適用できないWebhook**: 現在の状態に適用できない通知を受けた場合も、状態を変えずに`200 OK`を返す(REQ-PSP-007)。エラーを返すとPSPが再送を繰り返すため。
 - **素早くACKする**: `PspWebhookController`は署名検証・冪等チェック・状態更新までを1トランザクションで完結させ、重い処理を後回しにしない。
 - **`pspsimulator`**: 全エンドポイントで`202 Accepted`のみを返し、結果は`WebhookDispatcher`が遅延送信する。可否判定は金額に基づくルールで行う(REQ-SIM-003/004)。ランダムにするとE2Eテストが不安定になるため。
+- **遅延送信は`TaskScheduler`で行う**: `schedule(Runnable, Instant)`は時刻ベースなので、待機中にスレッドを消費しない。`@Async`と`Thread.sleep`の組み合わせは待っているあいだプールを占有するため使わない。スケジューラが`Runnable`の例外を握り潰す点に注意し、送信処理は自前で捕まえて記録する。
+- **手動再送**(REQ-SIM-007): 送信した本文を決済ごとにメモリ(`ConcurrentHashMap`)へ保持し、`POST /psp/webhooks/resend/{paymentId}`で送り直す。**本文はそのまま送る**ため`eventId`が変わらず、受信側では重複として弾かれる。これが受信側の冪等性(REQ-PSP-006)を実演する手段になる。署名の`t`だけは送信のたびに取り直す。原本の値を使い回すと、許容時間を過ぎた再送が自分の署名で弾かれるため。
 
 ### 5.1 ディスパッチの走査・送信・回収
 
@@ -467,11 +490,25 @@ COMMIT;
 
 キーには保持期間がある(REQ-NFR-006)ため、回収はキーが消える前に起きなければならない。`claimTimeout`(1分)を保持期間(24時間)より十分短く取ることで満たす。Relayが保持期間を超えて停止し続けることはない想定とする。
 
+### 5.2 保持期間の掃除
+
+冪等性のための2つのテーブルは参照されないまま増え続けるため、保持期間を過ぎた行を`@Scheduled`で削除する。
+
+| テーブル | 保持期間 | 削除するクラス |
+|---|---|---|
+| `payment_webhook_events` | 30日(REQ-NFR-007) | `payment.adapter.out.idempotency.WebhookEventCleaner` |
+| `payment_psp_idempotency_keys` | 24時間(REQ-NFR-006) | `pspsimulator.PspIdempotencyKeyCleaner` |
+
+**消しすぎると壊れる。** 冪等性の記録は「この処理はもう行った」という証拠であり、消えた後に重複が届くと初回と判定して再実行してしまう。冪等性キーの保持期間は`claimTimeout`(1分)より十分長く取る必要がある。回収した行を再送する際にキーが残っていることが、二重決済を防ぐ根拠だからである(§5.1)。
+
+**同じ形のクラスを2つ置き、`shared`へ共通化しない。** 前者は`payment`、後者は`pspsimulator`とモジュールが異なる。共通化すると`shared`が`JdbcClient`を持つことになり、Shared Kernelの位置づけから外れる。また「本番コードは`pspsimulator`に依存しない」というArchUnitのルールにも触れる。
+
 ### 設定値
 
 具体的な数値は[requirements.md §4](./requirements.md)で定義する。実装ではハードコードせず`application.properties`から注入し、テスト時に短縮できるようにする。
 
 ```properties
+# settlement 側
 settlement.psp.dispatch.polling-interval=1s
 settlement.psp.dispatch.max-attempts=5
 settlement.psp.dispatch.backoff-base=1s
@@ -482,9 +519,23 @@ settlement.psp.base-url=http://localhost:8080
 settlement.psp.connect-timeout=3s
 settlement.psp.read-timeout=5s
 settlement.psp.authorization-validity=7d
-settlement.psp.idempotency-key-retention=24h
 settlement.psp.webhook-event-retention=30d
+settlement.psp.webhook-secret=${PSP_WEBHOOK_SECRET:local-development-secret}
+settlement.psp.webhook-signature-tolerance=5m
+
+# PSPシミュレータ側
+settlement.pspsimulator.webhook-url=http://localhost:8080/payment/webhook
+settlement.pspsimulator.webhook-delay-min=1s
+settlement.pspsimulator.webhook-delay-max=5s
+settlement.pspsimulator.webhook-connect-timeout=3s
+settlement.pspsimulator.webhook-read-timeout=5s
+settlement.pspsimulator.webhook-secret=${PSP_WEBHOOK_SECRET:local-development-secret}
+settlement.pspsimulator.idempotency-key-retention=24h
 ```
+
+**プレフィックスで受信側と送信側を分ける。** `settlement.psp.*`がsettlementの設定、`settlement.pspsimulator.*`がシミュレータの設定。`idempotency-key-retention`が後者にあるのは、冪等性キーがPSP側の状態だからである([ADR-0002](./adr/0002-idempotency-key-store-on-psp-side.md)と同じ理由)。共有シークレットが両方に現れるのは、実プロダクトで別サービスがそれぞれ同じ鍵を持つ形と一致する。
+
+`webhook-signature-tolerance`は署名に含まれる時刻の許容範囲。これを過ぎた署名は再利用できない。判定は過去方向のみで行う。送信側と受信側が同一プロセスで動く以上、時計のずれが起きないためである。将来シミュレータを本物のPSPに置き換える際は、未来方向の判定も検討すること。
 
 `enabled`はRelayを動かすかの切り替え。テストでは既定で`false`にし、Relayを動かすテストだけが有効化する。走査が他のテストのデータを拾って非決定的になるのを避けるため。
 
@@ -495,6 +546,7 @@ settlement.psp.webhook-event-retention=30d
 - **Outboxのスコープを絞る**: Outboxは`payment`モジュール内の「PSPへ送るべきコマンド」専用。Order⇔Payment間には作らない。
 - **モジュール間の疎結合はカスタムport(Dependency Inversion)で実現する**: `PaymentOutcomePort`を`payment`自身が定義し、実装は`order`側が提供してDIで解決される。Springのイベント機構を使わないため、フェーズ(コミット前/後)を意識せずとも呼び出し元のトランザクションにそのまま乗る。既存のport.in/port.outパターンと一貫しており、モックによる単体テストも容易。
 - **冪等性は送信側・受信側の両方に必要**: 送信は`Idempotency-Key`、受信は`eventId`。片方だけでは不十分。
+- **現在時刻は`java.time.Clock`をBeanとして注入する**: `SettlementApplication`で`@Bean Clock clock()`を登録し、必要なクラスがコンストラクタで受け取る。`shared`に`ClockPort`は作らない。`java.time.Clock`が既に同じ抽象であり、ポートを重ねても得るものがないため。ドメインは`Instant`と`Duration`を引数で受け取るだけに保ち、フレームワークにも現在時刻にも依存しない(例: `Payment.recordAuthorization(pspReference, authorizedAt, validity)`)。テストでは`Clock.fixed()`を渡して時刻を固定する。ステップ2までに書いたアダプタ3箇所の`Instant.now()`直接呼び出しは残っている。
 - **不変条件はPayment集約に閉じ込める**(§3)。
 - **状態遷移を明示する**: 各操作は必ず`PENDING`系を経由してから最終状態に落ち着く状態機械として実装し、許可されない遷移は実行時に弾く。
 - **テスト戦略**: domain層(Payment集約の不変条件)は純粋なユニットテストで手厚く。`payment`⇔PSP間はWireMock等でHTTPスタブ化し、202応答・遅延Webhook・重複Webhook・署名検証エラーのケースを検証する。
@@ -562,7 +614,7 @@ class ArchitectureTest {
     }
 
     @Test
-    void onlyOrderMayImplementPaymentOutcomePort() {   // ステップ3で追加する
+    void onlyOrderMayImplementPaymentOutcomePort() {
         classes().that().implement("com.example.settlement.payment.application.port.out.PaymentOutcomePort")
             .should().resideInAPackage("..order..")
             .check(classes);
@@ -588,7 +640,7 @@ class ArchitectureTest {
 - `PaymentOutcomePort`の実装が`order`パッケージ以外に増えない
 - `domain`層と`shared`がフレームワークに依存しない(永続化アノテーションをドメインモデルに付けない)
 
-`onlyOrderMayImplementPaymentOutcomePort`は`PaymentOutcomePort`の実装が現れるステップ3で追加する。ArchUnitは対象が0件のルールを失敗として扱うため。
+`onlyOrderMayImplementPaymentOutcomePort`は`PaymentOutcomePort`の実装が現れたステップ3で追加した。ArchUnitは対象が0件のルールを失敗として扱うため、実装より先にルールだけを置くことはできない。
 
 ### 方式の選定: ArchUnitのみを採用する
 
