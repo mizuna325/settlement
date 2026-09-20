@@ -1,9 +1,12 @@
 package com.example.settlement.pspsimulator;
 
 import java.util.HexFormat;
+import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 
 import javax.crypto.Mac;
@@ -28,6 +31,13 @@ class WebhookDispatcher {
     private final TaskScheduler taskScheduler;
     private final RestClient restClient;
 
+    /**
+     * 手動再送(REQ-SIM-007)のために、送信した本文を決済ごとに覚えておく。
+     * 本物のPSPは永続化するが、演習では再起動をまたがない範囲で足りる(ステップ3の決定事項)。
+     * リクエストスレッドが書き、スケジューラのスレッドが読むため並行なMapを使う。
+     */
+    private final Map<UUID, String> sentPayloads = new ConcurrentHashMap<>();
+
     WebhookDispatcher(PspSimulatorProperty pspSimulatorProperty, TaskScheduler taskScheduler) {
         this.pspSimulatorProperty = pspSimulatorProperty;
         this.taskScheduler = taskScheduler;
@@ -51,12 +61,27 @@ class WebhookDispatcher {
                         paymentId,
                         "psp-" + pspReference,
                         result);
+        sentPayloads.put(paymentId, body);
         taskScheduler.schedule(() -> send(body), Instant.now().plus(randomDelay()));
 
     }
 
-    private void send(String body) {
+    /** 手動再送のために、その決済へ送った本文を返す。 */
+    Optional<String> payloadFor(UUID paymentId) {
+        return Optional.ofNullable(sentPayloads.get(paymentId));
+    }
 
+    /**
+     * 署名を付けて送る。
+     *
+     * <p>
+     * 署名の t は送信のたびに取り直す。原本の値を使い回すと、再送が許容時間
+     * (settlement.psp.webhook-signature-tolerance)を過ぎた時点で自分の署名で弾かれる。
+     * 本文は保持していたものをそのまま送るため eventId は変わらず、受信側では重複になる。
+     *
+     * @return 受信側が 2xx で受理したか
+     */
+    boolean send(String body) {
         try {
             long t = Instant.now().getEpochSecond();
             String signature = hmacSha256Hex(t + "." + body, pspSimulatorProperty.webhookSecret());
@@ -67,8 +92,11 @@ class WebhookDispatcher {
                     .body(body)
                     .retrieve()
                     .toBodilessEntity();
+            return true;
         } catch (Exception e) {
-            log.warn("HTTPリクエストが失敗", e);
+            // スケジューラは Runnable が投げた例外を握り潰すため、ここで記録しないと無言で消える。
+            log.warn("Webhookの送信に失敗した body={}", body, e);
+            return false;
         }
     }
 

@@ -16,9 +16,12 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.web.client.RestClient;
 
 import com.example.settlement.order.application.port.out.OrderRepository;
 import com.example.settlement.order.domain.CustomerId;
@@ -196,6 +199,46 @@ class WebhookDispatcherTest {
         await().during(Duration.ofSeconds(2))
                 .atMost(Duration.ofSeconds(5))
                 .until(() -> webhookEventCount() == 1L);
+    }
+
+    /**
+     * 手動再送のエンドポイントを叩く。4xx でも例外にせず、状態コードを見たいので
+     * onStatus で握りつぶす。
+     */
+    private HttpStatusCode resend(UUID paymentId) {
+        return RestClient.create()
+                .post()
+                .uri("http://localhost:" + PORT + "/psp/webhooks/resend/" + paymentId)
+                .retrieve()
+                .onStatus(status -> true, (request, response) -> {
+                })
+                .toBodilessEntity()
+                .getStatusCode();
+    }
+
+    @Test
+    @DisplayName("REQ-SIM-007: 手動再送すると同じ通知がもう一度届き、二重処理されない")
+    void manualResendDeliversTheSamePayloadAgain() {
+        UUID orderId = pendingOrder(1000);
+        PaymentId paymentId = authorizingPayment(orderId, 1000);
+        pspClient.authorize(UUID.randomUUID(), paymentId.paymentId(), 1000, "JPY");
+        awaitPaymentStatus(paymentId, "AUTHORIZED");
+
+        HttpStatusCode status = resend(paymentId.paymentId());
+
+        // 受信側が受理した = 署名が通っている。再送時に t を取り直していなければ
+        // 許容時間の判定で 401 になり、ここが 502 になる。
+        assertEquals(HttpStatus.OK, status);
+
+        // 保持していた本文をそのまま送るので eventId が変わらず、重複として弾かれる(REQ-PSP-006)。
+        assertEquals(1L, webhookEventCount());
+        assertEquals("CONFIRMED", orderStatusOf(orderId));
+    }
+
+    @Test
+    @DisplayName("REQ-SIM-007: 通知を送っていない決済への再送は 404 になる")
+    void manualResendForUnknownPaymentIsNotFound() {
+        assertEquals(HttpStatus.NOT_FOUND, resend(UUID.randomUUID()));
     }
 
     private static int freePort() {

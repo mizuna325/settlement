@@ -5,7 +5,9 @@ import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -46,6 +48,25 @@ class FakePspController {
                 idempotencyKey, request.paymentId(), request.amount(), request.currency());
         webhookDispatcher.dispatchAuthorizationResult(request.paymentId(), request.amount());
         return ResponseEntity.accepted().build();
+    }
+
+    /**
+     * REQ-SIM-007: 送信済みの通知を手動で送り直す。
+     *
+     * <p>
+     * 本物のPSPが管理画面に持つ再送機能にあたる。ここでは受信側の重複排除(REQ-PSP-006)を
+     * 実演するために置いている。保持していた本文をそのまま送るので eventId は変わらず、
+     * 受信側は状態を変えずに 200 を返す。
+     *
+     * @return 未送信の決済なら 404、受信側が受理したら 200、拒否したら 502
+     */
+    @PostMapping("/webhooks/resend/{paymentId}")
+    ResponseEntity<Void> resend(@PathVariable UUID paymentId) {
+        return webhookDispatcher.payloadFor(paymentId)
+                .map(body -> webhookDispatcher.send(body)
+                        ? ResponseEntity.ok().<Void>build()
+                        : ResponseEntity.status(HttpStatus.BAD_GATEWAY).<Void>build())
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     record AuthorizeRequest(UUID paymentId, long amount, String currency) {
