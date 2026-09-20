@@ -20,11 +20,12 @@ import org.springframework.web.bind.annotation.RestController;
 class FakePspController {
 
     private static final Logger log = LoggerFactory.getLogger(FakePspController.class);
-
+    private final WebhookDispatcher webhookDispatcher;
     private final PspIdempotencyKeyStore idempotencyKeyStore;
 
-    FakePspController(PspIdempotencyKeyStore idempotencyKeyStore) {
+    FakePspController(PspIdempotencyKeyStore idempotencyKeyStore, WebhookDispatcher webhookDispatcher) {
         this.idempotencyKeyStore = idempotencyKeyStore;
+        this.webhookDispatcher = webhookDispatcher;
     }
 
     /**
@@ -43,6 +44,7 @@ class FakePspController {
 
         log.info("与信要求を受け付けた key={} paymentId={} amount={} {}",
                 idempotencyKey, request.paymentId(), request.amount(), request.currency());
+        webhookDispatcher.dispatchAuthorizationResult(request.paymentId(), request.amount());
         return ResponseEntity.accepted().build();
     }
 
