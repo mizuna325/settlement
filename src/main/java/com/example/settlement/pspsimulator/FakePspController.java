@@ -32,15 +32,13 @@ class FakePspController {
 
     /**
      * REQ-SIM-001: 結果を含まない 202 Accepted のみを即座に返す。
-     * 与信の可否(REQ-SIM-003)はWebhookで通知するため、ステップ3で実装する。
+     * 与信の可否(REQ-SIM-003)はWebhookで通知する。
      */
     @PostMapping("/authorize")
     ResponseEntity<Void> authorize(@RequestHeader("Idempotency-Key") UUID idempotencyKey,
-            @RequestBody AuthorizeRequest request) {
+            @RequestBody PspOperationRequest request) {
 
-        if (!idempotencyKeyStore.registerIfAbsent(idempotencyKey, Instant.now())) {
-            // REQ-SIM-005: 受付済みのキー。新たな処理を行わず 202 を返す。
-            log.info("受付済みの冪等性キーのため処理しない key={}", idempotencyKey);
+        if (isDuplicate(idempotencyKey)) {
             return ResponseEntity.accepted().build();
         }
 
@@ -48,6 +46,32 @@ class FakePspController {
                 idempotencyKey, request.paymentId(), request.amount(), request.currency());
         webhookDispatcher.dispatchAuthorizationResult(request.paymentId(), request.amount());
         return ResponseEntity.accepted().build();
+    }
+
+    /**
+     * REQ-SIM-001: 売上確定も 202 のみを返し、可否(REQ-SIM-004)はWebhookで通知する。
+     */
+    @PostMapping("/capture")
+    ResponseEntity<Void> capture(@RequestHeader("Idempotency-Key") UUID idempotencyKey,
+            @RequestBody PspOperationRequest request) {
+
+        if (isDuplicate(idempotencyKey)) {
+            return ResponseEntity.accepted().build();
+        }
+
+        log.info("売上確定要求を受け付けた key={} paymentId={} amount={} {}",
+                idempotencyKey, request.paymentId(), request.amount(), request.currency());
+        webhookDispatcher.dispatchCaptureResult(request.paymentId(), request.amount());
+        return ResponseEntity.accepted().build();
+    }
+
+    /** REQ-SIM-005: 受付済みのキーなら新たな処理を行わない。 */
+    private boolean isDuplicate(UUID idempotencyKey) {
+        if (idempotencyKeyStore.registerIfAbsent(idempotencyKey, Instant.now())) {
+            return false;
+        }
+        log.info("受付済みの冪等性キーのため処理しない key={}", idempotencyKey);
+        return true;
     }
 
     /**
@@ -69,6 +93,7 @@ class FakePspController {
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
-    record AuthorizeRequest(UUID paymentId, long amount, String currency) {
+    /** 与信・売上確定で形が同じ。PspClient 側の同名レコードとは意図的に別物として持つ。 */
+    record PspOperationRequest(UUID paymentId, long amount, String currency) {
     }
 }

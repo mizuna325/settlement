@@ -88,7 +88,7 @@ class HandlePspWebhookTest {
     }
 
     @Test
-    @DisplayName("REQ-PSP-008: 与信成功で Payment が AUTHORIZED、Order が CONFIRMED、受信記録が残る")
+    @DisplayName("REQ-PSP-008: 与信成功で Order が CONFIRMED、受信記録が残る")
     void authorizedWebhookUpdatesBothAggregates() {
         UUID orderId = pendingOrder();
         PaymentId paymentId = authorizingPayment(orderId);
@@ -98,9 +98,11 @@ class HandlePspWebhookTest {
                 new PspWebhookNotification(eventId, paymentId, PspWebhookStatus.AUTHORIZED, "psp-ref-1"));
 
         assertEquals(WebhookOutcome.APPLIED, outcome);
-        assertEquals("AUTHORIZED", paymentStatusOf(paymentId));
         assertEquals("CONFIRMED", orderStatusOf(orderId));
         assertEquals(1L, webhookEventCountOf(eventId));
+        // REQ-PAY-004: 与信成功は同一トランザクション内でそのまま売上確定へ進むため、
+        // AUTHORIZED は永続化された状態としては観測されない(requirements.md §2.2)。
+        assertEquals("CAPTURING", paymentStatusOf(paymentId));
     }
 
     @Test
@@ -131,7 +133,7 @@ class HandlePspWebhookTest {
         WebhookOutcome redelivery = handlePspWebhookUseCase.handle(notification);
 
         assertEquals(WebhookOutcome.DUPLICATE, redelivery);
-        assertEquals("AUTHORIZED", paymentStatusOf(paymentId));
+        assertEquals("CAPTURING", paymentStatusOf(paymentId));
         assertEquals("CONFIRMED", orderStatusOf(orderId));
         assertEquals(1L, webhookEventCountOf(eventId));
     }

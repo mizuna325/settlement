@@ -86,6 +86,7 @@ class WebhookDispatcherTest {
         jdbcClient.sql("DELETE FROM payment_webhook_events").update();
         jdbcClient.sql("DELETE FROM payment_psp_idempotency_keys").update();
         jdbcClient.sql("DELETE FROM payment_psp_dispatch_events").update();
+        jdbcClient.sql("DELETE FROM payment_captures").update();
         jdbcClient.sql("DELETE FROM payment_authorizations").update();
         jdbcClient.sql("DELETE FROM payments").update();
         jdbcClient.sql("DELETE FROM order_lines").update();
@@ -140,7 +141,7 @@ class WebhookDispatcherTest {
 
         pspClient.authorize(UUID.randomUUID(), paymentId.paymentId(), 1000, "JPY");
 
-        awaitPaymentStatus(paymentId, "AUTHORIZED");
+        awaitPaymentStatus(paymentId, "CAPTURING");
         assertEquals("CONFIRMED", orderStatusOf(orderId));
         assertEquals(1L, webhookEventCount());
     }
@@ -165,7 +166,7 @@ class WebhookDispatcherTest {
 
         pspClient.authorize(UUID.randomUUID(), paymentId.paymentId(), 9900, "JPY");
 
-        awaitPaymentStatus(paymentId, "AUTHORIZED");
+        awaitPaymentStatus(paymentId, "CAPTURING");
     }
 
     @Test
@@ -180,7 +181,7 @@ class WebhookDispatcherTest {
         assertEquals("AUTHORIZING", paymentStatusOf(paymentId));
         assertEquals("PENDING", orderStatusOf(orderId));
 
-        awaitPaymentStatus(paymentId, "AUTHORIZED");
+        awaitPaymentStatus(paymentId, "CAPTURING");
     }
 
     @Test
@@ -193,7 +194,7 @@ class WebhookDispatcherTest {
         pspClient.authorize(idempotencyKey, paymentId.paymentId(), 1000, "JPY");
         pspClient.authorize(idempotencyKey, paymentId.paymentId(), 1000, "JPY");
 
-        awaitPaymentStatus(paymentId, "AUTHORIZED");
+        awaitPaymentStatus(paymentId, "CAPTURING");
 
         // 2通目が送られていれば eventId が別なので2行目が残る。
         await().during(Duration.ofSeconds(2))
@@ -222,7 +223,7 @@ class WebhookDispatcherTest {
         UUID orderId = pendingOrder(1000);
         PaymentId paymentId = authorizingPayment(orderId, 1000);
         pspClient.authorize(UUID.randomUUID(), paymentId.paymentId(), 1000, "JPY");
-        awaitPaymentStatus(paymentId, "AUTHORIZED");
+        awaitPaymentStatus(paymentId, "CAPTURING");
 
         HttpStatusCode status = resend(paymentId.paymentId());
 

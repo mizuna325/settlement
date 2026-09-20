@@ -24,6 +24,8 @@ import com.example.settlement.payment.application.port.in.PspWebhookStatus;
 import com.example.settlement.payment.application.port.in.WebhookOutcome;
 import com.example.settlement.payment.application.port.out.PaymentAuthDeclined;
 import com.example.settlement.payment.application.port.out.PaymentAuthorized;
+import com.example.settlement.payment.application.port.out.PaymentCaptureFailed;
+import com.example.settlement.payment.application.port.out.PaymentCaptured;
 import com.example.settlement.payment.application.port.out.PaymentOutcomePort;
 import com.example.settlement.payment.application.port.out.PaymentRepository;
 import com.example.settlement.payment.application.port.out.WebhookEventStorePort;
@@ -49,12 +51,19 @@ class HandlePspWebhookServiceTest {
     private final PaymentRepository paymentRepository = mock(PaymentRepository.class);
     private final PaymentOutcomePort paymentOutcomePort = mock(PaymentOutcomePort.class);
 
+    /**
+     * 与信成功に続く売上確定はモックにする。ここで見たいのは「同一トランザクション内で
+     * 依頼されること」であって、依頼そのものの中身は CapturePaymentService の担当。
+     */
+    private final CapturePaymentService capturePaymentService = mock(CapturePaymentService.class);
+
     private final HandlePspWebhookService service = new HandlePspWebhookService(
             webhookEventStorePort,
             paymentRepository,
             paymentOutcomePort,
             Clock.fixed(NOW, ZoneOffset.UTC),
-            new AuthorizationProperties(VALIDITY));
+            new AuthorizationProperties(VALIDITY),
+            capturePaymentService);
 
     private final OrderId orderId = new OrderId(UUID.randomUUID());
     private final PaymentId paymentId = PaymentId.generate();
@@ -77,6 +86,22 @@ class HandlePspWebhookServiceTest {
 
     private static PspWebhookNotification declined(PaymentId paymentId) {
         return new PspWebhookNotification("evt-1", paymentId, PspWebhookStatus.DECLINED, null);
+    }
+
+    private static PspWebhookNotification captured(PaymentId paymentId) {
+        return new PspWebhookNotification("evt-2", paymentId, PspWebhookStatus.CAPTURED, "psp-cap-1");
+    }
+
+    private static PspWebhookNotification captureFailed(PaymentId paymentId) {
+        return new PspWebhookNotification("evt-2", paymentId, PspWebhookStatus.CAPTURE_FAILED, null);
+    }
+
+    /** 与信が成立し、売上確定をPSPへ依頼済みの状態(CAPTURING)。 */
+    private Payment capturing() {
+        Payment payment = authorizing();
+        payment.recordAuthorization("psp-ref-1", NOW, VALIDITY);
+        payment.capture(payment.getAmount(), NOW);
+        return payment;
     }
 
     @Test
@@ -175,6 +200,73 @@ class HandlePspWebhookServiceTest {
         when(paymentRepository.findById(any())).thenReturn(Optional.empty());
 
         WebhookOutcome outcome = service.handle(authorized(PaymentId.generate()));
+
+        assertEquals(WebhookOutcome.NOT_APPLICABLE, outcome);
+        verify(paymentRepository, never()).save(any());
+        verifyNoInteractions(paymentOutcomePort);
+    }
+
+    // ---- 売上確定(ステップ4) ----
+
+    @Test
+    @DisplayName("REQ-PAY-004: 与信成功と同一トランザクション内で売上確定を開始する")
+    void authorizedWebhookStartsCaptureInTheSameTransaction() {
+        firstDelivery();
+        Payment payment = authorizing();
+
+        service.handle(authorized(paymentId));
+
+        verify(capturePaymentService).capture(payment, NOW);
+    }
+
+    @Test
+    @DisplayName("REQ-PAY-004: 与信拒否では売上確定へ進まない")
+    void declinedWebhookDoesNotStartCapture() {
+        firstDelivery();
+        authorizing();
+
+        service.handle(declined(paymentId));
+
+        verifyNoInteractions(capturePaymentService);
+    }
+
+    @Test
+    @DisplayName("REQ-ORD-004: 売上確定成功の通知で Payment が CAPTURED になり通知される")
+    void capturedWebhookIsApplied() {
+        firstDelivery();
+        Payment payment = capturing();
+
+        WebhookOutcome outcome = service.handle(captured(paymentId));
+
+        assertEquals(WebhookOutcome.APPLIED, outcome);
+        assertEquals(PaymentStatus.CAPTURED, payment.getPaymentStatus());
+        assertEquals("psp-cap-1", payment.getCapture().getPspReference());
+        assertEquals(NOW, payment.getCapture().getCapturedAt());
+        verify(paymentRepository).save(payment);
+        verify(paymentOutcomePort).captured(new PaymentCaptured(orderId));
+    }
+
+    @Test
+    @DisplayName("REQ-ORD-005: 売上確定失敗の通知で Payment が CAPTURE_FAILED になり通知される")
+    void captureFailedWebhookIsApplied() {
+        firstDelivery();
+        Payment payment = capturing();
+
+        WebhookOutcome outcome = service.handle(captureFailed(paymentId));
+
+        assertEquals(WebhookOutcome.APPLIED, outcome);
+        assertEquals(PaymentStatus.CAPTURE_FAILED, payment.getPaymentStatus());
+        verify(paymentRepository).save(payment);
+        verify(paymentOutcomePort).captureFailed(new PaymentCaptureFailed(orderId));
+    }
+
+    @Test
+    @DisplayName("REQ-PSP-007: 売上確定を依頼していない決済への確定通知は NOT_APPLICABLE になる")
+    void capturedWebhookWithoutRequestIsNotApplicable() {
+        firstDelivery();
+        authorizing();
+
+        WebhookOutcome outcome = service.handle(captured(paymentId));
 
         assertEquals(WebhookOutcome.NOT_APPLICABLE, outcome);
         verify(paymentRepository, never()).save(any());

@@ -22,7 +22,8 @@ record PaymentEntity(@Id UUID paymentId,
         long amount,
         String currency,
         String status,
-        @MappedCollection(idColumn = "payment_id") AuthorizationEntity authorization) {
+        @MappedCollection(idColumn = "payment_id") AuthorizationEntity authorization,
+        @MappedCollection(idColumn = "payment_id") CaptureEntity capture) {
 
     static PaymentEntity from(Payment payment) {
         return new PaymentEntity(
@@ -32,7 +33,8 @@ record PaymentEntity(@Id UUID paymentId,
                 payment.getAmount().amount(),
                 payment.getAmount().unit().name(),
                 payment.getPaymentStatus().name(),
-                AuthorizationEntity.from(payment.getAuthorization()));
+                AuthorizationEntity.from(payment.getAuthorization()),
+                CaptureEntity.from(payment.getCapture()));
     }
 
     Payment toDomain() {
@@ -42,6 +44,7 @@ record PaymentEntity(@Id UUID paymentId,
                 new OrderId(orderId),
                 new Money(amount, Currency.valueOf(currency)),
                 PaymentStatus.valueOf(status),
-                authorization.toDomain());
+                authorization.toDomain(),
+                capture == null ? null : capture.toDomain());
     }
 }

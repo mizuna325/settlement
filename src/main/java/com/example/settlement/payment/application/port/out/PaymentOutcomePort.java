@@ -5,4 +5,8 @@ public interface PaymentOutcomePort {
 
     void declined(PaymentAuthDeclined event);
 
+    void captured(PaymentCaptured event);
+
+    void captureFailed(PaymentCaptureFailed event);
+
 }

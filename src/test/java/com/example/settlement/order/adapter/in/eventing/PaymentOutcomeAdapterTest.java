@@ -11,9 +11,13 @@ import org.junit.jupiter.api.Test;
 
 import com.example.settlement.order.application.port.in.CancelOrderUseCase;
 import com.example.settlement.order.application.port.in.ConfirmOrderUseCase;
+import com.example.settlement.order.application.port.in.FailOrderSettlementUseCase;
+import com.example.settlement.order.application.port.in.SettleOrderUseCase;
 import com.example.settlement.order.domain.OrderId;
 import com.example.settlement.payment.application.port.out.PaymentAuthDeclined;
 import com.example.settlement.payment.application.port.out.PaymentAuthorized;
+import com.example.settlement.payment.application.port.out.PaymentCaptureFailed;
+import com.example.settlement.payment.application.port.out.PaymentCaptured;
 
 /**
  * Adapter の責務は「payment の OrderId を order の OrderId に詰め替えて、対応する
@@ -24,7 +28,11 @@ class PaymentOutcomeAdapterTest {
 
     private final ConfirmOrderUseCase confirmOrderUseCase = mock(ConfirmOrderUseCase.class);
     private final CancelOrderUseCase cancelOrderUseCase = mock(CancelOrderUseCase.class);
-    private final PaymentOutcomeAdapter adapter = new PaymentOutcomeAdapter(confirmOrderUseCase, cancelOrderUseCase);
+    private final SettleOrderUseCase settleOrderUseCase = mock(SettleOrderUseCase.class);
+    private final FailOrderSettlementUseCase failOrderSettlementUseCase = mock(FailOrderSettlementUseCase.class);
+
+    private final PaymentOutcomeAdapter adapter = new PaymentOutcomeAdapter(
+            confirmOrderUseCase, cancelOrderUseCase, settleOrderUseCase, failOrderSettlementUseCase);
 
     private static com.example.settlement.payment.domain.OrderId paymentOrderId(UUID orderId) {
         return new com.example.settlement.payment.domain.OrderId(orderId);
@@ -50,5 +58,27 @@ class PaymentOutcomeAdapterTest {
 
         verify(cancelOrderUseCase).cancel(new OrderId(orderId));
         verifyNoInteractions(confirmOrderUseCase);
+    }
+
+    @Test
+    @DisplayName("REQ-ORD-004: 売上確定完了の通知を受けると注文の売上確定を依頼する")
+    void capturedSettlesTheOrder() {
+        UUID orderId = UUID.randomUUID();
+
+        adapter.captured(new PaymentCaptured(paymentOrderId(orderId)));
+
+        verify(settleOrderUseCase).settle(new OrderId(orderId));
+        verifyNoInteractions(failOrderSettlementUseCase);
+    }
+
+    @Test
+    @DisplayName("REQ-ORD-005: 売上確定失敗の通知を受けると注文を要対応の状態へ進めるよう依頼する")
+    void captureFailedMarksTheOrderAsFailed() {
+        UUID orderId = UUID.randomUUID();
+
+        adapter.captureFailed(new PaymentCaptureFailed(paymentOrderId(orderId)));
+
+        verify(failOrderSettlementUseCase).failSettlement(new OrderId(orderId));
+        verifyNoInteractions(settleOrderUseCase);
     }
 }

@@ -36,12 +36,23 @@ public class PspClient {
      * @throws PspDispatchFailedException 接続失敗・タイムアウト・2xx以外の応答
      */
     public void authorize(UUID dispatchEventId, UUID paymentId, long amount, String currency) {
+        send("/psp/authorize", dispatchEventId, paymentId, amount, currency);
+    }
+
+    /**
+     * 売上確定をPSPへ送信する。与信と同じく 202 の受理のみを意味し、結果はWebhookで届く。
+     */
+    public void capture(UUID dispatchEventId, UUID paymentId, long amount, String currency) {
+        send("/psp/capture", dispatchEventId, paymentId, amount, currency);
+    }
+
+    private void send(String path, UUID dispatchEventId, UUID paymentId, long amount, String currency) {
         try {
             restClient.post()
-                    .uri("/psp/authorize")
+                    .uri(path)
                     .header("Idempotency-Key", dispatchEventId.toString())
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(new AuthorizeRequest(paymentId, amount, currency))
+                    .body(new PspOperationRequest(paymentId, amount, currency))
                     .retrieve()
                     .toBodilessEntity();
         } catch (RuntimeException e) {
@@ -49,6 +60,6 @@ public class PspClient {
         }
     }
 
-    private record AuthorizeRequest(UUID paymentId, long amount, String currency) {
+    private record PspOperationRequest(UUID paymentId, long amount, String currency) {
     }
 }

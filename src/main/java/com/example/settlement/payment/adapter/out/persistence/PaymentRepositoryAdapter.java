@@ -19,7 +19,12 @@ class PaymentRepositoryAdapter implements PaymentRepository {
 
     @Override
     public Payment save(Payment payment) {
-        return paymentJdbcRepository.save(PaymentEntity.from(payment)).toDomain();
+        PaymentEntity saved = paymentJdbcRepository.save(PaymentEntity.from(payment));
+        // 渡された集約にもバージョンを書き戻す(design.md §3)。同一トランザクション内で
+        // 同じインスタンスを再度保存する経路があるため、戻り値だけを更新すると
+        // 2回目が古いバージョンで更新を試みて楽観ロックに失敗する。
+        payment.applyPersistedVersion(saved.version());
+        return saved.toDomain();
     }
 
     @Override

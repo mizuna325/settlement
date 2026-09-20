@@ -99,15 +99,15 @@ class PaymentTest {
         Authorization authorization = Authorization.create(AuthorizationId.generate(), amount);
 
         assertThrows(IllegalArgumentException.class,
-                () -> Payment.reconstruct(1, null, orderId, amount, PaymentStatus.AUTHORIZING, authorization));
+                () -> Payment.reconstruct(1, null, orderId, amount, PaymentStatus.AUTHORIZING, authorization, null));
         assertThrows(IllegalArgumentException.class,
-                () -> Payment.reconstruct(1, paymentId, null, amount, PaymentStatus.AUTHORIZING, authorization));
+                () -> Payment.reconstruct(1, paymentId, null, amount, PaymentStatus.AUTHORIZING, authorization, null));
         assertThrows(IllegalArgumentException.class,
-                () -> Payment.reconstruct(1, paymentId, orderId, null, PaymentStatus.AUTHORIZING, authorization));
+                () -> Payment.reconstruct(1, paymentId, orderId, null, PaymentStatus.AUTHORIZING, authorization, null));
         assertThrows(IllegalArgumentException.class,
-                () -> Payment.reconstruct(1, paymentId, orderId, amount, null, authorization));
+                () -> Payment.reconstruct(1, paymentId, orderId, amount, null, authorization, null));
         assertThrows(IllegalArgumentException.class,
-                () -> Payment.reconstruct(1, paymentId, orderId, amount, PaymentStatus.AUTHORIZING, null));
+                () -> Payment.reconstruct(1, paymentId, orderId, amount, PaymentStatus.AUTHORIZING, null, null));
     }
 
     @Test
@@ -121,7 +121,7 @@ class PaymentTest {
                 AuthorizationStatus.AUTHORIZED, authorizedAt, expiresAt);
 
         Payment payment = Payment.reconstruct(3, paymentId, orderId, jpy(1000), PaymentStatus.AUTHORIZED,
-                authorization);
+                authorization, null);
 
         assertEquals(3, payment.getVersion());
         assertEquals(paymentId, payment.getPaymentId());
@@ -240,5 +240,155 @@ class PaymentTest {
                 () -> authorizing().recordAuthorization("psp-ref-1", AUTHORIZED_AT, Duration.ZERO));
         assertThrows(IllegalArgumentException.class,
                 () -> authorizing().recordAuthorization("psp-ref-1", AUTHORIZED_AT, Duration.ofDays(-1)));
+    }
+
+    // ---- 売上確定(ステップ4) ----
+
+    /** 与信が成功し、売上確定を依頼できる状態。 */
+    private static Payment authorized() {
+        Payment payment = authorizing();
+        payment.recordAuthorization("psp-ref-1", AUTHORIZED_AT, VALIDITY);
+        return payment;
+    }
+
+    /** 有効期限内の時刻。与信日時の翌日。 */
+    private static final Instant WITHIN_VALIDITY = AUTHORIZED_AT.plus(Duration.ofDays(1));
+
+    @Test
+    @DisplayName("REQ-PAY-004: 売上確定の依頼で Payment が CAPTURING、Capture が PENDING になる")
+    void captureStartsAsPending() {
+        Payment payment = authorized();
+
+        payment.capture(jpy(1000), WITHIN_VALIDITY);
+
+        assertEquals(PaymentStatus.CAPTURING, payment.getPaymentStatus());
+        assertNotNull(payment.getCapture());
+        assertEquals(CaptureStatus.PENDING, payment.getCapture().getCaptureStatus());
+        assertEquals(jpy(1000), payment.getCapture().getAmount());
+    }
+
+    @Test
+    @DisplayName("REQ-PAY-004: 依頼直後はPSP側の参照IDと確定日時が未確定である")
+    void createdCaptureHasNoPspResultYet() {
+        Payment payment = authorized();
+
+        payment.capture(jpy(1000), WITHIN_VALIDITY);
+
+        assertNull(payment.getCapture().getPspReference());
+        assertNull(payment.getCapture().getCapturedAt());
+    }
+
+    @Test
+    @DisplayName("REQ-PAY-005: 与信額を超える売上確定は拒否される")
+    void captureExceedingAuthorizedAmountIsRejected() {
+        Payment payment = authorized();
+
+        assertThrows(IllegalStateException.class, () -> payment.capture(jpy(1001), WITHIN_VALIDITY));
+
+        // 拒否された場合は集約の状態を変えない。
+        assertEquals(PaymentStatus.AUTHORIZED, payment.getPaymentStatus());
+        assertNull(payment.getCapture());
+    }
+
+    @Test
+    @DisplayName("REQ-PAY-005: 与信額と同額の売上確定は許可される")
+    void captureOfTheFullAuthorizedAmountIsAllowed() {
+        Payment payment = authorized();
+
+        payment.capture(jpy(1000), WITHIN_VALIDITY);
+
+        assertEquals(PaymentStatus.CAPTURING, payment.getPaymentStatus());
+    }
+
+    @Test
+    @DisplayName("REQ-PAY-006: 与信の有効期限を過ぎた売上確定は拒否される")
+    void captureAfterAuthorizationExpiredIsRejected() {
+        Payment payment = authorized();
+        Instant afterExpiry = AUTHORIZED_AT.plus(VALIDITY).plusSeconds(1);
+
+        assertThrows(IllegalStateException.class, () -> payment.capture(jpy(1000), afterExpiry));
+
+        assertEquals(PaymentStatus.AUTHORIZED, payment.getPaymentStatus());
+        assertNull(payment.getCapture());
+    }
+
+    @Test
+    @DisplayName("REQ-PAY-010: PENDING の売上確定がある状態で追加の依頼はできない")
+    void captureWhileAnotherIsPendingIsRejected() {
+        Payment payment = authorized();
+        payment.capture(jpy(1000), WITHIN_VALIDITY);
+
+        assertThrows(IllegalStateException.class, () -> payment.capture(jpy(1000), WITHIN_VALIDITY));
+    }
+
+    @Test
+    @DisplayName("与信が成立していない決済は売上確定を依頼できない")
+    void captureWithoutAuthorizationIsRejected() {
+        Payment payment = authorizing();
+
+        assertThrows(IllegalStateException.class, () -> payment.capture(jpy(1000), WITHIN_VALIDITY));
+    }
+
+    @Test
+    @DisplayName("REQ-ORD-004: 売上確定成功で Payment と Capture が CAPTURED になる")
+    void recordCaptureMovesBothToCaptured() {
+        Payment payment = authorized();
+        payment.capture(jpy(1000), WITHIN_VALIDITY);
+
+        payment.recordCapture("psp-cap-1", WITHIN_VALIDITY);
+
+        assertEquals(PaymentStatus.CAPTURED, payment.getPaymentStatus());
+        assertEquals(CaptureStatus.CAPTURED, payment.getCapture().getCaptureStatus());
+        assertEquals("psp-cap-1", payment.getCapture().getPspReference());
+        assertEquals(WITHIN_VALIDITY, payment.getCapture().getCapturedAt());
+    }
+
+    @Test
+    @DisplayName("REQ-ORD-005: 売上確定失敗で Payment が CAPTURE_FAILED、Capture が FAILED になる")
+    void failCaptureMovesBothToFailed() {
+        Payment payment = authorized();
+        payment.capture(jpy(1000), WITHIN_VALIDITY);
+
+        payment.failCapture();
+
+        assertEquals(PaymentStatus.CAPTURE_FAILED, payment.getPaymentStatus());
+        assertEquals(CaptureStatus.FAILED, payment.getCapture().getCaptureStatus());
+    }
+
+    @Test
+    @DisplayName("依頼していない売上確定の結果は記録できない")
+    void captureResultWithoutRequestIsRejected() {
+        Payment payment = authorized();
+
+        assertThrows(IllegalStateException.class, () -> payment.recordCapture("psp-cap-1", WITHIN_VALIDITY));
+        assertThrows(IllegalStateException.class, () -> payment.failCapture());
+    }
+
+    @Test
+    @DisplayName("確定済みの売上確定に同じ結果を再度適用することはできない")
+    void captureIsNotAppliedTwice() {
+        Payment payment = authorized();
+        payment.capture(jpy(1000), WITHIN_VALIDITY);
+        payment.recordCapture("psp-cap-1", WITHIN_VALIDITY);
+
+        assertThrows(IllegalStateException.class, () -> payment.recordCapture("psp-cap-1", WITHIN_VALIDITY));
+        assertThrows(IllegalStateException.class, () -> payment.failCapture());
+    }
+
+    @Test
+    @DisplayName("PSP側の参照IDのない売上確定成功は記録できない")
+    void captureWithoutPspReferenceIsRejected() {
+        Payment payment = authorized();
+        payment.capture(jpy(1000), WITHIN_VALIDITY);
+
+        assertThrows(IllegalArgumentException.class, () -> payment.recordCapture(null, WITHIN_VALIDITY));
+        assertThrows(IllegalArgumentException.class, () -> payment.recordCapture(" ", WITHIN_VALIDITY));
+    }
+
+    @Test
+    @DisplayName("売上確定の依頼に必須の値が欠けている場合は拒否される")
+    void captureRequestRejectsMissingValues() {
+        assertThrows(IllegalArgumentException.class, () -> authorized().capture(null, WITHIN_VALIDITY));
+        assertThrows(IllegalArgumentException.class, () -> authorized().capture(jpy(1000), null));
     }
 }

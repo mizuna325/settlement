@@ -98,6 +98,7 @@ class AuthorizationCycleTest {
         jdbcClient.sql("DELETE FROM payment_webhook_events").update();
         jdbcClient.sql("DELETE FROM payment_psp_idempotency_keys").update();
         jdbcClient.sql("DELETE FROM payment_psp_dispatch_events").update();
+        jdbcClient.sql("DELETE FROM payment_captures").update();
         jdbcClient.sql("DELETE FROM payment_authorizations").update();
         jdbcClient.sql("DELETE FROM payments").update();
         jdbcClient.sql("DELETE FROM order_lines").update();
@@ -165,16 +166,28 @@ class AuthorizationCycleTest {
     }
 
     @Test
-    @DisplayName("REQ-ORD-002: 与信成功で注文が CONFIRMED まで自動で進む")
-    void authorizedOrderReachesConfirmed() throws Exception {
+    @DisplayName("REQ-ORD-002/004: 与信成功から売上確定まで注文が SETTLED へ自動で進む")
+    void authorizedOrderReachesSettled() throws Exception {
         UUID orderId = placeOrder(1000);
 
         // ここから先は人手を介さない。Relay の走査、PSPへの送信、遅延Webhook、
-        // 署名検証、集約の更新がすべて自動で進む。
-        awaitOrderStatus(orderId, "CONFIRMED");
+        // 署名検証、集約の更新がすべて自動で進む。与信成功はそのまま売上確定へ続く
+        // (REQ-PAY-004)ため、CONFIRMED は通過点でしかない。
+        awaitOrderStatus(orderId, "SETTLED");
 
-        assertEquals("AUTHORIZED", paymentStatusOf(orderId));
-        assertEquals(1L, webhookEventCount());
+        assertEquals("CAPTURED", paymentStatusOf(orderId));
+        // 与信と売上確定でWebhookは2通届く。
+        assertEquals(2L, webhookEventCount());
+    }
+
+    @Test
+    @DisplayName("REQ-ORD-005: 売上確定失敗で注文が SETTLEMENT_FAILED になる")
+    void captureFailureLeavesTheOrderForManualHandling() throws Exception {
+        // REQ-SIM-004: 下2桁が 98 ならシミュレータが売上確定の失敗を返す。
+        UUID orderId = placeOrder(1098);
+
+        awaitOrderStatus(orderId, "SETTLEMENT_FAILED");
+        assertEquals("CAPTURE_FAILED", paymentStatusOf(orderId));
     }
 
     @Test
@@ -191,9 +204,10 @@ class AuthorizationCycleTest {
     @DisplayName("REQ-PSP-006: 同じ通知が再送されても二重に処理されない")
     void redeliveredWebhookIsNotAppliedTwice() throws Exception {
         UUID orderId = placeOrder(1000);
-        awaitOrderStatus(orderId, "CONFIRMED");
+        awaitOrderStatus(orderId, "SETTLED");
 
         // REQ-SIM-007: シミュレータの手動再送で、同じ eventId の通知をもう一度届かせる。
+        // 保持しているのは決済ごとに最新の1件なので、ここでは売上確定の通知が再送される。
         HttpStatusCode resendStatus = RestClient.create()
                 .post()
                 .uri("http://localhost:" + PORT + "/psp/webhooks/resend/" + paymentIdOf(orderId))
@@ -202,9 +216,10 @@ class AuthorizationCycleTest {
                 .getStatusCode();
 
         assertEquals(HttpStatus.OK, resendStatus);
-        assertEquals(1L, webhookEventCount());
-        assertEquals("CONFIRMED", orderStatusOf(orderId));
-        assertEquals("AUTHORIZED", paymentStatusOf(orderId));
+        // 与信と売上確定の2通のまま。再送は eventId が同じなので記録が増えない。
+        assertEquals(2L, webhookEventCount());
+        assertEquals("SETTLED", orderStatusOf(orderId));
+        assertEquals("CAPTURED", paymentStatusOf(orderId));
     }
 
     @Test

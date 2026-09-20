@@ -50,23 +50,36 @@ class WebhookDispatcher {
                 .build();
     }
 
+    /** REQ-SIM-003: 金額の下2桁が 99 なら拒否。ランダムにしない。 */
     void dispatchAuthorizationResult(UUID paymentId, long amount) {
-        String result = (amount % 100 == 99) ? "DECLINED" : "AUTHORIZED";
-        String eventId = UUID.randomUUID().toString();
-        String pspReference = UUID.randomUUID().toString();
+        dispatch(paymentId, (amount % 100 == 99) ? "DECLINED" : "AUTHORIZED");
+    }
+
+    /** REQ-SIM-004: 金額の下2桁が 98 なら失敗。ランダムにしない。 */
+    void dispatchCaptureResult(UUID paymentId, long amount) {
+        dispatch(paymentId, (amount % 100 == 98) ? "CAPTURE_FAILED" : "CAPTURED");
+    }
+
+    private void dispatch(UUID paymentId, String status) {
+        // eventId と pspReference はPSPが採番するもの。送信ごとに新しい値になる。
         String body = """
                 {"eventId":"%s","paymentId":"%s","pspReference":"%s","status":"%s"}"""
                 .formatted(
-                        "evt-" + eventId,
+                        "evt-" + UUID.randomUUID(),
                         paymentId,
-                        "psp-" + pspReference,
-                        result);
+                        "psp-" + UUID.randomUUID(),
+                        status);
         sentPayloads.put(paymentId, body);
         taskScheduler.schedule(() -> send(body), Instant.now().plus(randomDelay()));
-
     }
 
-    /** 手動再送のために、その決済へ送った本文を返す。 */
+    /**
+     * 手動再送のために、その決済へ最後に送った本文を返す。
+     *
+     * <p>
+     * 1決済につき最新の1件だけを保持する。与信の後に売上確定を送れば、残るのは後者になる。
+     * 運用上ほしいのは「直近の結果をもう一度届ける」ことなので、これで足りる。
+     */
     Optional<String> payloadFor(UUID paymentId) {
         return Optional.ofNullable(sentPayloads.get(paymentId));
     }

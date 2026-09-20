@@ -138,7 +138,8 @@ class PspWebhookControllerTest {
                 .content(body))
                 .andExpect(status().isOk());
 
-        assertEquals("AUTHORIZED", paymentStatusOf(paymentId));
+        // REQ-PAY-004: 与信成功はそのまま売上確定へ進むため CAPTURING で観測される。
+        assertEquals("CAPTURING", paymentStatusOf(paymentId));
         assertEquals("CONFIRMED", orderStatusOf(orderId));
     }
 
@@ -224,7 +225,8 @@ class PspWebhookControllerTest {
                 .content(body))
                 .andExpect(status().isOk());
 
-        assertEquals("AUTHORIZED", paymentStatusOf(paymentId));
+        // REQ-PAY-004: 与信成功はそのまま売上確定へ進むため CAPTURING で観測される。
+        assertEquals("CAPTURING", paymentStatusOf(paymentId));
         assertEquals("CONFIRMED", orderStatusOf(orderId));
     }
 

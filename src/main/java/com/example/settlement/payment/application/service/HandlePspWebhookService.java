@@ -15,6 +15,8 @@ import com.example.settlement.payment.application.port.in.PspWebhookNotification
 import com.example.settlement.payment.application.port.in.WebhookOutcome;
 import com.example.settlement.payment.application.port.out.PaymentAuthDeclined;
 import com.example.settlement.payment.application.port.out.PaymentAuthorized;
+import com.example.settlement.payment.application.port.out.PaymentCaptureFailed;
+import com.example.settlement.payment.application.port.out.PaymentCaptured;
 import com.example.settlement.payment.application.port.out.PaymentOutcomePort;
 import com.example.settlement.payment.application.port.out.PaymentRepository;
 import com.example.settlement.payment.application.port.out.WebhookEventStorePort;
@@ -30,18 +32,21 @@ class HandlePspWebhookService implements HandlePspWebhookUseCase {
     private final PaymentOutcomePort paymentOutcomePort;
     private final Clock clock;
     private final AuthorizationProperties authorizationProperties;
+    private final CapturePaymentService capturePaymentService;
 
     HandlePspWebhookService(
             WebhookEventStorePort webhookEventStorePort,
             PaymentRepository paymentRepository,
             PaymentOutcomePort paymentOutcomePort,
             Clock clock,
-            AuthorizationProperties authorizationProperties) {
+            AuthorizationProperties authorizationProperties,
+            CapturePaymentService capturePaymentService) {
         this.webhookEventStorePort = webhookEventStorePort;
         this.paymentRepository = paymentRepository;
         this.paymentOutcomePort = paymentOutcomePort;
         this.clock = clock;
         this.authorizationProperties = authorizationProperties;
+        this.capturePaymentService = capturePaymentService;
     }
 
     @Transactional
@@ -68,11 +73,23 @@ class HandlePspWebhookService implements HandlePspWebhookUseCase {
                             authorizationProperties.authorizationValidity());
                     paymentRepository.save(payment);
                     paymentOutcomePort.authorized(new PaymentAuthorized(payment.getOrderId()));
+                    // REQ-PAY-004: 与信成功と同一トランザクションで売上確定へ進む。
+                    capturePaymentService.capture(payment, receivedAt);
                 }
                 case DECLINED -> {
                     payment.declineAuthorization();
                     paymentRepository.save(payment);
                     paymentOutcomePort.declined(new PaymentAuthDeclined(payment.getOrderId()));
+                }
+                case CAPTURED -> {
+                    payment.recordCapture(notification.pspReference(), receivedAt);
+                    paymentRepository.save(payment);
+                    paymentOutcomePort.captured(new PaymentCaptured(payment.getOrderId()));
+                }
+                case CAPTURE_FAILED -> {
+                    payment.failCapture();
+                    paymentRepository.save(payment);
+                    paymentOutcomePort.captureFailed(new PaymentCaptureFailed(payment.getOrderId()));
                 }
             }
             return WebhookOutcome.APPLIED;

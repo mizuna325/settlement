@@ -11,6 +11,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import com.example.settlement.payment.adapter.out.gateway.PspClient;
+import com.example.settlement.payment.domain.PaymentOperation;
 
 /**
  * Dispatch Outbox を走査し、未送信のレコードをPSPへ送る(REQ-PSP-002)。
@@ -61,12 +62,30 @@ class PspDispatchRelay {
         for (PspDispatchEventEntity event : claimed) {
             try {
                 // ② 送信(トランザクション外)
-                pspClient.authorize(event.dispatchEventId(), event.paymentId(), event.amount(), event.currency());
+                send(event);
                 // ③ 結果記録(トランザクション2)
                 pspDispatchStore.markSent(event.dispatchEventId());
             } catch (RuntimeException e) {
                 recordFailure(event, e);
             }
+        }
+    }
+
+    /**
+     * 操作の種別ごとに送信先を振り分ける。
+     *
+     * <p>
+     * switch 式にしているのは、PaymentOperation に値が増えたときにコンパイルエラーで
+     * 気付けるようにするため。送り先を取り違えると、PSPには届くが結果が返らない。
+     */
+    private void send(PspDispatchEventEntity event) {
+        PaymentOperation operation = PaymentOperation.valueOf(event.operation());
+        switch (operation) {
+            case AUTHORIZE ->
+                pspClient.authorize(event.dispatchEventId(), event.paymentId(), event.amount(), event.currency());
+            case CAPTURE ->
+                pspClient.capture(event.dispatchEventId(), event.paymentId(), event.amount(), event.currency());
+            case REFUND -> throw new UnsupportedOperationException("REFUND はステップ5で実装する");
         }
     }
 
