@@ -243,7 +243,7 @@ class PspWebhookControllerTest {
 
         // 拒否で確定した後に、到達が遅れた与信成功が届く状況。
         String lateBody = body(paymentId, "AUTHORIZED", "psp-ref-1");
-        ListAppender<ILoggingEvent> logs = captureLogsOf(PspWebhookController.class);
+        ListAppender<ILoggingEvent> logs = captureLogsOf(APPLYING_SERVICE);
         try {
             mockMvc.perform(post("/payment/webhook")
                     .contentType(MediaType.APPLICATION_JSON)
@@ -251,7 +251,7 @@ class PspWebhookControllerTest {
                     .content(lateBody))
                     .andExpect(status().isOk());
         } finally {
-            detach(PspWebhookController.class, logs);
+            detach(APPLYING_SERVICE, logs);
         }
 
         assertEquals("AUTH_DECLINED", paymentStatusOf(paymentId));
@@ -260,15 +260,21 @@ class PspWebhookControllerTest {
                 "適用できなかったことを知らせるWARNログが出ていない");
     }
 
-    private static ListAppender<ILoggingEvent> captureLogsOf(Class<?> type) {
+    /**
+     * 適用できなかった理由を知るのは、集約を更新しようとしたサービス側だけなので、
+     * WARN はそちらが出す。package-private のためクラス参照できず、名前で指定する。
+     */
+    private static final String APPLYING_SERVICE = "com.example.settlement.payment.application.service.HandlePspWebhookService";
+
+    private static ListAppender<ILoggingEvent> captureLogsOf(String loggerName) {
         ListAppender<ILoggingEvent> appender = new ListAppender<>();
         appender.start();
-        ((ch.qos.logback.classic.Logger) LoggerFactory.getLogger(type)).addAppender(appender);
+        ((ch.qos.logback.classic.Logger) LoggerFactory.getLogger(loggerName)).addAppender(appender);
         return appender;
     }
 
-    private static void detach(Class<?> type, ListAppender<ILoggingEvent> appender) {
-        ((ch.qos.logback.classic.Logger) LoggerFactory.getLogger(type)).detachAppender(appender);
+    private static void detach(String loggerName, ListAppender<ILoggingEvent> appender) {
+        ((ch.qos.logback.classic.Logger) LoggerFactory.getLogger(loggerName)).detachAppender(appender);
         appender.stop();
     }
 }

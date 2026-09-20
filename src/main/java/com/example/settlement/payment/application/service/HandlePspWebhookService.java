@@ -4,6 +4,8 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.Optional;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,6 +22,8 @@ import com.example.settlement.payment.domain.Payment;
 
 @Service
 class HandlePspWebhookService implements HandlePspWebhookUseCase {
+
+    private static final Logger log = LoggerFactory.getLogger(HandlePspWebhookService.class);
 
     private final WebhookEventStorePort webhookEventStorePort;
     private final PaymentRepository paymentRepository;
@@ -49,6 +53,8 @@ class HandlePspWebhookService implements HandlePspWebhookUseCase {
         }
         Optional<Payment> found = paymentRepository.findById(notification.paymentId());
         if (found.isEmpty()) {
+            log.warn("通知された決済が存在しない。eventId={}, paymentId={}",
+                    notification.eventId(), notification.paymentId());
             return WebhookOutcome.NOT_APPLICABLE;
         }
         Payment payment = found.get();
@@ -72,6 +78,10 @@ class HandlePspWebhookService implements HandlePspWebhookUseCase {
             return WebhookOutcome.APPLIED;
         } catch (IllegalStateException e) {
             // 到達順序は保証されないため、現在の状態に適用できない通知は異常ではない(REQ-PSP-007)。
+            // ただし理由を知っているのはここだけなので、記録せずに返すと追跡できなくなる。
+            log.warn("現在の状態に適用できない通知を受信した。eventId={}, paymentId={}, status={}, 決済の状態={}, 理由={}",
+                    notification.eventId(), notification.paymentId(), notification.status(),
+                    payment.getPaymentStatus(), e.getMessage());
             return WebhookOutcome.NOT_APPLICABLE;
         }
     }

@@ -2,8 +2,6 @@ package com.example.settlement.payment.adapter.in.webhook;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -13,7 +11,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.example.settlement.payment.application.port.in.HandlePspWebhookUseCase;
 import com.example.settlement.payment.application.port.in.PspWebhookNotification;
-import com.example.settlement.payment.application.port.in.WebhookOutcome;
 import com.example.settlement.payment.domain.PaymentId;
 
 import java.security.MessageDigest;
@@ -32,8 +29,6 @@ import tools.jackson.databind.ObjectMapper;
 @RestController
 @RequestMapping("/payment/webhook")
 class PspWebhookController {
-
-    private static final Logger log = LoggerFactory.getLogger(PspWebhookController.class);
 
     private final WebhookProperty webhookProperty;
     private final Clock clock;
@@ -59,17 +54,16 @@ class PspWebhookController {
         }
 
         PspWebhookRequest request = objectMapper.readValue(rawBody, PspWebhookRequest.class);
-        WebhookOutcome outcome = handlePspWebhookUseCase.handle(new PspWebhookNotification(
+
+        // 適用できたか、重複か、適用できなかったかによらず 200 を返す。
+        // エラーを返すとPSPが再送を繰り返すため(REQ-PSP-006, REQ-PSP-007)。
+        // 適用できなかった理由は、それを知る HandlePspWebhookService 側が WARN に残す。
+        handlePspWebhookUseCase.handle(new PspWebhookNotification(
                 request.eventId(),
                 new PaymentId(request.paymentId()),
                 request.status(),
                 request.pspReference()));
 
-        if (outcome == WebhookOutcome.NOT_APPLICABLE) {
-            // 到達順序は保証されないため再送を誘発しない。ただし黙って捨てると追跡できなくなる(REQ-PSP-007)。
-            log.warn("適用できないWebhookを受信した。eventId={}, paymentId={}, status={}",
-                    request.eventId(), request.paymentId(), request.status());
-        }
         return ResponseEntity.ok().build();
     }
 
