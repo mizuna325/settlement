@@ -16,6 +16,7 @@ import java.time.Duration;
  */
 @ConfigurationProperties(prefix = "settlement.pspsimulator")
 public record PspSimulatorProperty(String webhookUrl, Duration webhookDelayMin, Duration webhookDelayMax,
-        String webhookSecret, Duration webhookConnectTimeout, Duration webhookReadTimeout) {
+        String webhookSecret, Duration webhookConnectTimeout, Duration webhookReadTimeout,
+        Duration idempotencyKeyRetention) {
 
 }
