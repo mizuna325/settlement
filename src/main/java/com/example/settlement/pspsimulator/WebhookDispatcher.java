@@ -13,6 +13,9 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
 import org.springframework.scheduling.TaskScheduler;
+
+import io.micrometer.context.ContextSnapshot;
+import io.micrometer.context.ContextSnapshotFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
@@ -83,11 +86,21 @@ class WebhookDispatcher {
                         "psp-" + UUID.randomUUID(),
                         status);
         sentPayloads.put(paymentId, body);
-        taskScheduler.schedule(() -> send(body), Instant.now().plus(randomDelay()));
+
+        // 送信は TaskScheduler の別スレッドで、しかも1〜5秒後に走る。スレッドローカルに
+        // 置かれたトレースコンテキストはそのままでは越えないため、いまの文脈を捕まえて
+        // Runnable に被せる(design.md §8.1 の境界③)。
+        // これをしないと、Webhook が元の注文とは無関係な新しいトレースとして記録される。
+        ContextSnapshot snapshot = ContextSnapshotFactory.builder().build().captureAll();
+        // 波括弧で囲んで Runnable にする。send は boolean を返すため、式のままだと
+        // Callable<Boolean> と解釈されて schedule に渡せない。戻り値は手動再送でのみ使う。
+        Runnable task = snapshot.wrap(() -> {
+            send(body);
+        });
+        taskScheduler.schedule(task, Instant.now().plus(randomDelay()));
     }
 
     /**
-     * おyこ
      * 手動再送のために、その決済へ最後に送った本文を返す。
      *
      * <p>
