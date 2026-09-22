@@ -3,6 +3,8 @@ package com.example.settlement;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -13,6 +15,7 @@ import java.net.ServerSocket;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.UUID;
 
 import javax.crypto.Mac;
@@ -179,6 +182,56 @@ class AuthorizationCycleTest {
         assertEquals("CAPTURED", paymentStatusOf(orderId));
         // 与信と売上確定でWebhookは2通届く。
         assertEquals(2L, webhookEventCount());
+    }
+
+    /**
+     * REQ-NFR-008: 1注文分の処理が1本のトレースとして追える。
+     *
+     * <p>
+     * 注文の受付から確定までに、処理は4回スレッドをまたぐ(design.md §8.1)。
+     * うち2つはHTTPなので自動で繋がるが、Outbox の行を経由する箇所と
+     * TaskScheduler の遅延実行は、IDをデータとして持ち回らないと切れる。
+     *
+     * <p>
+     * 検証には Outbox の行に記録された traceparent を使う。与信の行は POST /orders の
+     * スレッドで、売上確定の行は Webhook が届いた後のスレッドで積まれる。その間に
+     * 4つの境界すべてを通るため、両者の traceId が一致していれば全体が繋がっている。
+     * ログを見るより確実で、タイミングにも依存しない。
+     *
+     * <p>
+     * 個々の境界は DispatchTraceContinuityTest と
+     * DelayedSendTraceContinuityTest がそれぞれ見ている。
+     */
+    @Test
+    @DisplayName("REQ-NFR-008: 注文の受付から確定までが1本のトレースとして繋がる")
+    void theWholeCycleStaysInOneTrace() throws Exception {
+        UUID orderId = placeOrder(1000);
+        awaitOrderStatus(orderId, "SETTLED");
+
+        // 与信のディスパッチは POST /orders のスレッドで積まれる。
+        // 売上確定のディスパッチは、Webhook が届いた後のスレッドで積まれる。
+        // その間に4つの境界すべてを通るので、両者の traceId が一致していれば全体が繋がっている。
+        List<String> traceparents = jdbcClient.sql("""
+                SELECT d.traceparent
+                  FROM payment_psp_dispatch_events d
+                  JOIN payments p ON p.payment_id = d.payment_id
+                 WHERE p.order_id = :id
+                 ORDER BY d.created_at
+                """)
+                .param("id", orderId)
+                .query(String.class)
+                .list();
+
+        assertEquals(2, traceparents.size(), "与信と売上確定で2件のディスパッチが積まれる");
+        traceparents.forEach(t -> assertNotNull(t, "traceparent が記録されていない"));
+
+        String authorizeTraceId = traceparents.get(0).split("-")[1];
+        String captureTraceId = traceparents.get(1).split("-")[1];
+        assertEquals(authorizeTraceId, captureTraceId,
+                "注文の受付から売上確定の依頼まででトレースが分断されている");
+
+        // span は境界ごとに新しくなる。同じ span のまま運ばれているわけではない。
+        assertNotEquals(traceparents.get(0).split("-")[2], traceparents.get(1).split("-")[2]);
     }
 
     /** REQ-ORD-009: 返金を要求する。受け付けは 202 で、成立はWebhook到達後。 */
