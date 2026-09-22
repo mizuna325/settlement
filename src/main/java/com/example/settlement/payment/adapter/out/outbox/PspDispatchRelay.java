@@ -13,6 +13,9 @@ import org.springframework.stereotype.Component;
 import com.example.settlement.payment.adapter.out.gateway.PspClient;
 import com.example.settlement.payment.domain.PaymentOperation;
 
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
+
 /**
  * Dispatch Outbox を走査し、未送信のレコードをPSPへ送る(REQ-PSP-002)。
  *
@@ -38,12 +41,14 @@ class PspDispatchRelay {
     private final PspDispatchStore pspDispatchStore;
     private final PspClient pspClient;
     private final PspDispatchProperties properties;
+    private final DispatchTraceContext traceContext;
 
     PspDispatchRelay(PspDispatchStore pspDispatchStore, PspClient pspClient,
-            PspDispatchProperties properties) {
+            PspDispatchProperties properties, DispatchTraceContext traceContext) {
         this.pspDispatchStore = pspDispatchStore;
         this.pspClient = pspClient;
         this.properties = properties;
+        this.traceContext = traceContext;
     }
 
     /**
@@ -60,13 +65,19 @@ class PspDispatchRelay {
                 properties.batchSize(), properties.claimTimeout());
 
         for (PspDispatchEventEntity event : claimed) {
-            try {
+            // 行ごとにトレースを復元する。バッチ単位ではない。
+            // 1周で10件扱えば10回の出し入れになる(design.md §8.6)。
+            Span span = traceContext.startSpan(event.traceparent(), "psp-dispatch");
+            try (Tracer.SpanInScope scope = traceContext.tracer().withSpan(span)) {
                 // ② 送信(トランザクション外)
                 send(event);
                 // ③ 結果記録(トランザクション2)
                 pspDispatchStore.markSent(event.dispatchEventId());
             } catch (RuntimeException e) {
+                span.error(e);
                 recordFailure(event, e);
+            } finally {
+                span.end();
             }
         }
     }

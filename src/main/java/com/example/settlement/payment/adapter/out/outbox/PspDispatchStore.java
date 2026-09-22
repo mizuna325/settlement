@@ -59,6 +59,7 @@ class PspDispatchStore {
              WHERE d.dispatch_event_id = c.dispatch_event_id
             RETURNING d.dispatch_event_id, d.payment_id, d.operation, d.amount, d.currency,
                       d.status, d.attempts, d.claimed_at, d.next_attempt_at, d.created_at,
+                      d.traceparent,
                       c.previous_status, c.previous_claimed_at
             """;
 
@@ -224,7 +225,8 @@ class PspDispatchStore {
                 rs.getShort("attempts"),
                 instantOf(rs, "claimed_at"),
                 instantOf(rs, "next_attempt_at"),
-                instantOf(rs, "created_at"));
+                instantOf(rs, "created_at"),
+                rs.getString("traceparent"));
 
         return new ClaimedRow(event, rs.getString("previous_status"), instantOf(rs, "previous_claimed_at"));
     }

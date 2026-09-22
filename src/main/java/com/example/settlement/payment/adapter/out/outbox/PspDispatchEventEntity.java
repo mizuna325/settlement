@@ -24,10 +24,16 @@ record PspDispatchEventEntity(@Id UUID dispatchEventId,
         short attempts,
         Instant claimedAt,
         Instant nextAttemptAt,
-        Instant createdAt) {
+        Instant createdAt,
+        String traceparent) {
 
+    /**
+     * @param traceparent 行を積んだ時点のトレースコンテキスト(design.md §8.1)。
+     *                    Relay は別スレッド・後の時刻で走るためスレッドローカルでは渡せない。
+     *                    トレースが有効でない場合は null になる
+     */
     static PspDispatchEventEntity pending(PaymentOperation operation, PaymentId paymentId, Money amount,
-            Instant createdAt) {
+            Instant createdAt, String traceparent) {
         return new PspDispatchEventEntity(
                 UUID.randomUUID(),
                 paymentId.paymentId(),
@@ -38,6 +44,7 @@ record PspDispatchEventEntity(@Id UUID dispatchEventId,
                 (short) 0,
                 null,
                 createdAt, // 初回は待たずに送る
-                createdAt);
+                createdAt,
+                traceparent);
     }
 }

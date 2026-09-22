@@ -14,14 +14,21 @@ import com.example.settlement.shared.Money;
 class PspDispatchQueueAdapter implements PspDispatchQueuePort {
 
     private final JdbcAggregateTemplate jdbcAggregateTemplate;
+    private final DispatchTraceContext traceContext;
 
-    PspDispatchQueueAdapter(JdbcAggregateTemplate jdbcAggregateTemplate) {
+    PspDispatchQueueAdapter(JdbcAggregateTemplate jdbcAggregateTemplate, DispatchTraceContext traceContext) {
         this.jdbcAggregateTemplate = jdbcAggregateTemplate;
+        this.traceContext = traceContext;
     }
 
+    /**
+     * トレースコンテキストの取得はここで行い、{@link PspDispatchQueuePort} には持ち込まない。
+     * 追跡は技術的な横断関心であって、アプリケーション層が意識すべき契約ではないため。
+     */
     @Override
     public void enqueue(PaymentOperation operation, PaymentId paymentId, Money amount) {
         jdbcAggregateTemplate.insert(
-                PspDispatchEventEntity.pending(operation, paymentId, amount, Instant.now()));
+                PspDispatchEventEntity.pending(operation, paymentId, amount, Instant.now(),
+                        traceContext.capture()));
     }
 }
