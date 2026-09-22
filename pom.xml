@@ -44,6 +44,33 @@
 			<artifactId>spring-boot-starter-webmvc</artifactId>
 		</dependency>
 
+		<!--
+			可観測性(design.md §8)。伝搬形式は W3C Trace Context。
+			traceId / spanId が自動で MDC に入り、構造化ログの各行に載る。
+
+			spring-boot-starter-opentelemetry ではなくこの成果物を選ぶ。
+			前者は OTLP エクスポーターまで含むため、送出先が無い第1段階では
+			接続エラーが出続ける。ここは自動設定とブリッジだけでよい。
+			第2段階(Jaegerへ送る)へ移るときに starter へ差し替える。
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
+		</dependency>
+		<!--
+			RestClient.Builder の自動設定。観測機能が組み込まれた Builder が Bean として
+			用意され、注入して使うと traceparent ヘッダが自動で付く。
+			RestClient.builder() を自前で呼ぶと素の Builder になり、HTTP越しの伝搬が切れる。
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-restclient</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.micrometer</groupId>
+			<artifactId>micrometer-tracing-bridge-otel</artifactId>
+		</dependency>
+
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-devtools</artifactId>

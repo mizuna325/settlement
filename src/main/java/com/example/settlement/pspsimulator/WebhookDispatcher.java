@@ -38,14 +38,19 @@ class WebhookDispatcher {
      */
     private final Map<UUID, String> sentPayloads = new ConcurrentHashMap<>();
 
-    WebhookDispatcher(PspSimulatorProperty pspSimulatorProperty, TaskScheduler taskScheduler) {
+    /**
+     * @param builder 自動設定された {@code RestClient.Builder} を受け取る。自前に作ると
+     *                観測機能が組み込まれず、traceparent ヘッダが付かない(design.md §8)。
+     */
+    WebhookDispatcher(PspSimulatorProperty pspSimulatorProperty, TaskScheduler taskScheduler,
+            RestClient.Builder builder) {
         this.pspSimulatorProperty = pspSimulatorProperty;
         this.taskScheduler = taskScheduler;
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout(pspSimulatorProperty.webhookConnectTimeout());
         requestFactory.setReadTimeout(pspSimulatorProperty.webhookReadTimeout());
 
-        this.restClient = RestClient.builder()
+        this.restClient = builder
                 .requestFactory(requestFactory)
                 .build();
     }
@@ -82,6 +87,7 @@ class WebhookDispatcher {
     }
 
     /**
+     * おyこ
      * 手動再送のために、その決済へ最後に送った本文を返す。
      *
      * <p>

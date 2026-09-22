@@ -16,13 +16,18 @@ public class PspClient {
 
     private final RestClient restClient;
 
-    PspClient(PspProperties properties) {
+    /**
+     * @param builder 自動設定された {@code RestClient.Builder} を受け取る。
+     *                {@code RestClient.builder()} で自前に作ると観測機能が組み込まれず、
+     *                traceparent ヘッダが付かないためトレースがここで途切れる(design.md §8)。
+     */
+    PspClient(PspProperties properties, RestClient.Builder builder) {
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         // REQ-NFR-003: 接続3秒 / 読み取り5秒
         requestFactory.setConnectTimeout(properties.connectTimeout());
         requestFactory.setReadTimeout(properties.readTimeout());
 
-        this.restClient = RestClient.builder()
+        this.restClient = builder
                 .baseUrl(properties.baseUrl())
                 .requestFactory(requestFactory)
                 .build();
