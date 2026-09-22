@@ -13,6 +13,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# GITHUB_TOKEN に与える権限を明示的に絞る。宣言しないとリポジトリ既定に従うため、
+# 設定次第では書き込み可能なトークンがテスト実行に渡る。ここはテストを流すだけで、
+# リポジトリへ書き戻す操作が一切ない。
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
