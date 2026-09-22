@@ -1,0 +1,64 @@
+name: CI
+
+# design.md §9: ArchUnit のルールはテストが実行されて初めて強制力を持つ。
+# ローカル実行に委ねると「テストを流さなければ違反したままコミットできる」状態が残るため、
+# push と pull request のたびに必ず走らせる。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同じブランチへ続けて push したとき、古い実行は打ち切る。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # 結合テストの多くが実DBを必要とする。H2等への差し替えはしない。
+    # FOR UPDATE SKIP LOCKED や ON CONFLICT DO NOTHING に依存しており、
+    # 別のDBで通っても PostgreSQL で通る保証にならないため(design.md §9)。
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: settlement
+          POSTGRES_USER: demo
+          POSTGRES_PASSWORD: demo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U demo -d settlement"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      # アプリのDB設定は環境変数から注入する(compose.yaml と同じ形)。
+      SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/settlement
+      SPRING_DATASOURCE_USERNAME: demo
+      SPRING_DATASOURCE_PASSWORD: demo
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build and test
+        run: ./mvnw -B verify
+
+      # 失敗時に原因を追えるよう、レポートを残す。
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+          retention-days: 7
