@@ -4,6 +4,7 @@ import java.net.URI;
 import java.util.UUID;
 
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -11,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.example.settlement.order.application.port.in.CreateOrderUseCase;
+import com.example.settlement.order.application.port.in.FindOrderUseCase;
 import com.example.settlement.order.application.port.in.RequestRefundUseCase;
 import com.example.settlement.order.domain.OrderId;
 
@@ -22,10 +24,13 @@ class OrderController {
 
     private final CreateOrderUseCase createOrderUseCase;
     private final RequestRefundUseCase requestRefundUseCase;
+    private final FindOrderUseCase findOrderUseCase;
 
-    OrderController(CreateOrderUseCase createOrderUseCase, RequestRefundUseCase requestRefundUseCase) {
+    OrderController(CreateOrderUseCase createOrderUseCase, RequestRefundUseCase requestRefundUseCase,
+            FindOrderUseCase findOrderUseCase) {
         this.createOrderUseCase = createOrderUseCase;
         this.requestRefundUseCase = requestRefundUseCase;
+        this.findOrderUseCase = findOrderUseCase;
     }
 
     /** REQ-ORD-001: 注文を受け付け、同一トランザクション内で与信を開始する。 */
@@ -35,6 +40,22 @@ class OrderController {
         return ResponseEntity
                 .created(URI.create("/orders/" + orderId.orderId()))
                 .body(CreateOrderResponse.from(orderId));
+    }
+
+    /**
+     * REQ-ORD-007: 注文の現在状態を返す。
+     *
+     * <p>
+     * {@code POST /orders} は注文IDだけを返し、確定するのはPSPの結果が届いた後になる。
+     * 呼び出した側が結果を知る手段がこれにあたるため、状態が変わるまで繰り返し呼ばれる
+     * 前提で置いている。
+     */
+    @GetMapping("/{orderId}")
+    ResponseEntity<OrderResponse> find(@PathVariable UUID orderId) {
+        return findOrderUseCase.find(new OrderId(orderId))
+                .map(OrderResponse::from)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     /**

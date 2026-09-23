@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -40,7 +41,10 @@ import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.web.client.RestClient;
+
+import com.jayway.jsonpath.JsonPath;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
@@ -142,18 +146,37 @@ class AuthorizationCycleTest {
                 .single();
     }
 
+    /**
+     * REQ-ORD-007 の照会APIで状態を見る。SQLを直接読まない。
+     *
+     * <p>
+     * 非同期に進む処理の結果を、実際の利用者と同じ経路で観測することになる。
+     * DBを直接読むと、APIからは結果が取れないまま通ってしまう余地が残る。
+     */
     private String orderStatusOf(UUID orderId) {
-        return jdbcClient.sql("SELECT status FROM orders WHERE order_id = :id")
-                .param("id", orderId)
-                .query(String.class)
-                .single();
+        return jsonField(get("/orders/" + orderId), "status");
     }
 
+    /** REQ-PAY-013 の照会API。決済IDは注文の照会からは辿れないため paymentIdOf を使う。 */
     private String paymentStatusOf(UUID orderId) {
-        return jdbcClient.sql("SELECT status FROM payments WHERE order_id = :id")
-                .param("id", orderId)
-                .query(String.class)
-                .single();
+        return jsonField(get("/payments/" + paymentIdOf(orderId)), "status");
+    }
+
+    /**
+     * 応答のJSONから項目を1つ取り出す。
+     *
+     * <p>
+     * awaitility から繰り返し呼ばれるため、失敗を例外にせず値を返す形にしている。
+     */
+    private String jsonField(MockHttpServletRequestBuilder request, String field) {
+        try {
+            String body = mockMvc.perform(request)
+                    .andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsString();
+            return JsonPath.read(body, "$." + field);
+        } catch (Exception e) {
+            throw new IllegalStateException("照会APIの呼び出しに失敗した", e);
+        }
     }
 
     private UUID paymentIdOf(UUID orderId) {

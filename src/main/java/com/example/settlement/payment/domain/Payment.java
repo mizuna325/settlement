@@ -235,12 +235,39 @@ public class Payment {
     }
 
     /**
-     * 確定済みの返金累計(REQ-PAY-009 / REQ-PAY-011 が使う)。
+     * REQ-PAY-013: 与信が成立した金額。成立していなければ0。
+     *
+     * <p>
+     * 依頼した金額ではなく<strong>確定した金額</strong>を返す。PSPが拒否した場合や
+     * 結果待ちの場合に金額を見せると、押さえられていない額を押さえたように読める。
+     * {@link #refundedTotal()} が確定済みの返金だけを数えるのと同じ基準。
+     */
+    public Money authorizedAmount() {
+        return this.authorization.getAuthorizationStatus() == AuthorizationStatus.AUTHORIZED
+                ? this.authorization.getAmount()
+                : new Money(0, this.amount.unit());
+    }
+
+    /**
+     * REQ-PAY-013: 売上が確定した金額。確定していなければ0。
+     *
+     * <p>
+     * 売上確定は起きていない場合があるため capture は null をとりうる(0..1)。
+     * 失敗した場合も0を返す。理由は {@link #authorizedAmount()} と同じ。
+     */
+    public Money capturedAmount() {
+        return this.capture != null && this.capture.getCaptureStatus() == CaptureStatus.CAPTURED
+                ? this.capture.getAmount()
+                : new Money(0, this.amount.unit());
+    }
+
+    /**
+     * 確定済みの返金累計(REQ-PAY-009 / REQ-PAY-011 / REQ-PAY-013 が使う)。
      *
      * <p>
      * REQ-PAY-008 の超過判定とは集計対象が異なる。あちらは処理中の返金も数える必要がある。
      */
-    private Money refundedTotal() {
+    public Money refundedTotal() {
         return this.refunds.stream()
                 .filter(Refund::isRefunded)
                 .map(Refund::getAmount)
