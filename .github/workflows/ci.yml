@@ -23,6 +23,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    # ジョブ既定の上限は6時間。ハングしたまま放置されると、その間ずっと
+    # ランナーを占有する。このプロジェクトでは実際に、予約済みのWebhook送信が
+    # 後続テスト中に発火して行ロックで16分待つ事象が起きている(design.md §9.1)。
+    # ローカルの verify が約37秒、CIでも数分で終わる想定なので、15分で打ち切る。
+    timeout-minutes: 15
+
     # 結合テストの多くが実DBを必要とする。H2等への差し替えはしない。
     # FOR UPDATE SKIP LOCKED や ON CONFLICT DO NOTHING に依存しており、
     # 別のDBで通っても PostgreSQL で通る保証にならないため(design.md §9)。
