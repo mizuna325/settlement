@@ -1,5 +1,9 @@
 package com.example.settlement.order.application.service;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.slf4j.MDC.MDCCloseable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,6 +23,8 @@ import com.example.settlement.shared.Money;
 @Service
 class RequestRefundService implements RequestRefundUseCase {
 
+    private static final Logger log = LoggerFactory.getLogger(RequestRefundService.class);
+
     private final RefundPaymentUseCase refundPaymentUseCase;
 
     RequestRefundService(RefundPaymentUseCase refundPaymentUseCase) {
@@ -28,9 +34,19 @@ class RequestRefundService implements RequestRefundUseCase {
     @Override
     @Transactional
     public void requestRefund(OrderId orderId, Money amount, String reason) {
-        refundPaymentUseCase.refund(
-                new com.example.settlement.payment.domain.OrderId(orderId.orderId()),
-                amount,
-                new RefundReason(reason));
+        try (MDCCloseable scope = MDC.putCloseable("orderId", orderId.orderId().toString())) {
+            // 返金は人手が起点になる唯一の操作(REQ-ORD-009)。誰かが要求した事実を
+            // 残さないと、この後の一連の処理が何をきっかけに始まったのか分からない。
+            // reason は顧客の自由入力なので載せない。必要なら payment_refunds から引ける。
+            log.atInfo()
+                    .addKeyValue("amount", amount.amount())
+                    .addKeyValue("currency", amount.unit().name())
+                    .log("返金要求を受け付け、決済コンテキストへ引き渡した");
+
+            refundPaymentUseCase.refund(
+                    new com.example.settlement.payment.domain.OrderId(orderId.orderId()),
+                    amount,
+                    new RefundReason(reason));
+        }
     }
 }

@@ -95,7 +95,7 @@ class WebhookDispatcher {
         // 波括弧で囲んで Runnable にする。send は boolean を返すため、式のままだと
         // Callable<Boolean> と解釈されて schedule に渡せない。戻り値は手動再送でのみ使う。
         Runnable task = snapshot.wrap(() -> {
-            send(body);
+            send(paymentId, body);
         });
         taskScheduler.schedule(task, Instant.now().plus(randomDelay()));
     }
@@ -119,9 +119,11 @@ class WebhookDispatcher {
      * (settlement.psp.webhook-signature-tolerance)を過ぎた時点で自分の署名で弾かれる。
      * 本文は保持していたものをそのまま送るため eventId は変わらず、受信側では重複になる。
      *
+     * @param paymentId ログに載せる識別子。本文はPSPの通知内容そのものであり、
+     *                  丸ごと出すと量とPIIの両面で扱いにくくなるため出さない(design.md §8.8)
      * @return 受信側が 2xx で受理したか
      */
-    boolean send(String body) {
+    boolean send(UUID paymentId, String body) {
         try {
             long t = Instant.now().getEpochSecond();
             String signature = hmacSha256Hex(t + "." + body, pspSimulatorProperty.webhookSecret());
@@ -135,7 +137,9 @@ class WebhookDispatcher {
             return true;
         } catch (Exception e) {
             // スケジューラは Runnable が投げた例外を握り潰すため、ここで記録しないと無言で消える。
-            log.warn("Webhookの送信に失敗した body={}", body, e);
+            log.atWarn().setCause(e)
+                    .addKeyValue("paymentId", paymentId.toString())
+                    .log("Webhookの送信に失敗した");
             return false;
         }
     }

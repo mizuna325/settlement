@@ -1,5 +1,7 @@
 package com.example.settlement.order.adapter.in.eventing;
 
+import org.slf4j.MDC;
+import org.slf4j.MDC.MDCCloseable;
 import org.springframework.stereotype.Component;
 
 import com.example.settlement.order.application.port.in.CancelOrderUseCase;
@@ -44,27 +46,47 @@ class PaymentOutcomeAdapter implements PaymentOutcomePort {
 
     @Override
     public void authorized(PaymentAuthorized event) {
-        confirmOrderUseCase.confirm(orderIdOf(event.orderId()));
+        withOrderId(event.orderId(), confirmOrderUseCase::confirm);
     }
 
     @Override
     public void declined(PaymentAuthDeclined event) {
-        cancelOrderUseCase.cancel(orderIdOf(event.orderId()));
+        withOrderId(event.orderId(), cancelOrderUseCase::cancel);
     }
 
     @Override
     public void captured(PaymentCaptured event) {
-        settleOrderUseCase.settle(orderIdOf(event.orderId()));
+        withOrderId(event.orderId(), settleOrderUseCase::settle);
     }
 
     @Override
     public void captureFailed(PaymentCaptureFailed event) {
-        failOrderSettlementUseCase.failSettlement(orderIdOf(event.orderId()));
+        withOrderId(event.orderId(), failOrderSettlementUseCase::failSettlement);
     }
 
     @Override
     public void refunded(PaymentRefunded event) {
-        refundOrderUseCase.refund(orderIdOf(event.orderId()), event.fullyRefunded());
+        withOrderId(event.orderId(),
+                orderId -> refundOrderUseCase.refund(orderId, event.fullyRefunded()));
+    }
+
+    /**
+     * 型を詰め替えたうえで、処理中の全行に載るよう orderId をMDCへ置く(design.md §8.8)。
+     *
+     * <p>
+     * ここが order コンテキストの入口であり、orderId が確定する最初の地点でもある。
+     * 個々のUseCaseで置くと5箇所に散り、置き忘れても誰も気付かない。
+     *
+     * <p>
+     * 呼び出し元のスレッドにはすでに payment 側の paymentId と eventId が載っている。
+     * 上書きではなく追加なので、この区間のログには3つとも載る。
+     */
+    private void withOrderId(com.example.settlement.payment.domain.OrderId source,
+            java.util.function.Consumer<OrderId> action) {
+        OrderId orderId = orderIdOf(source);
+        try (MDCCloseable scope = MDC.putCloseable("orderId", orderId.orderId().toString())) {
+            action.accept(orderId);
+        }
     }
 
     /** payment 側の OrderId は order 側とは別の型。ここが両者のモデルの境目になる。 */

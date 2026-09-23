@@ -2,6 +2,8 @@ package com.example.settlement.payment.adapter.in.webhook;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import org.slf4j.MDC;
+import org.slf4j.MDC.MDCCloseable;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -55,14 +57,23 @@ class PspWebhookController {
 
         PspWebhookRequest request = objectMapper.readValue(rawBody, PspWebhookRequest.class);
 
-        // 適用できたか、重複か、適用できなかったかによらず 200 を返す。
-        // エラーを返すとPSPが再送を繰り返すため(REQ-PSP-006, REQ-PSP-007)。
-        // 適用できなかった理由は、それを知る HandlePspWebhookService 側が WARN に残す。
-        handlePspWebhookUseCase.handle(new PspWebhookNotification(
-                request.eventId(),
-                new PaymentId(request.paymentId()),
-                request.status(),
-                request.pspReference()));
+        // この通知の処理中に出る全行へ識別子を載せる(design.md §8.8)。
+        // 個々の行で addKeyValue するのではなくMDCに置くのは、どの行から読み始めても
+        // 「どの決済のどの通知か」が分かるようにするため。
+        // putCloseable は close で remove する。スレッドは使い回されるため、残すと
+        // 無関係なリクエストのログに前の値が載る。
+        try (MDCCloseable eventId = MDC.putCloseable("eventId", request.eventId());
+                MDCCloseable paymentId = MDC.putCloseable("paymentId", request.paymentId().toString())) {
+
+            // 適用できたか、重複か、適用できなかったかによらず 200 を返す。
+            // エラーを返すとPSPが再送を繰り返すため(REQ-PSP-006, REQ-PSP-007)。
+            // 適用できなかった理由は、それを知る HandlePspWebhookService 側が WARN に残す。
+            handlePspWebhookUseCase.handle(new PspWebhookNotification(
+                    request.eventId(),
+                    new PaymentId(request.paymentId()),
+                    request.status(),
+                    request.pspReference()));
+        }
 
         return ResponseEntity.ok().build();
     }

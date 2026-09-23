@@ -111,11 +111,16 @@ class PspDispatchStore {
                 .query(PspDispatchStore::toClaimedRow)
                 .list();
 
+        // 確保はRelayのループの手前で走るため、MDCにはまだ識別子が載っていない。
+        // この2行だけは自分で addKeyValue する。
         claimed.stream()
                 .filter(ClaimedRow::reclaimed)
-                .forEach(row -> log.warn(
-                        "取り残されたディスパッチを回収した dispatchEventId={} attempts={} 前回の確保={}",
-                        row.event().dispatchEventId(), row.event().attempts(), row.previousClaimedAt()));
+                .forEach(row -> log.atWarn()
+                        .addKeyValue("dispatchEventId", row.event().dispatchEventId().toString())
+                        .addKeyValue("paymentId", row.event().paymentId().toString())
+                        .addKeyValue("attempts", row.event().attempts())
+                        .addKeyValue("previousClaimedAt", String.valueOf(row.previousClaimedAt()))
+                        .log("確保したまま取り残されたディスパッチを回収した"));
 
         return claimed.stream().map(ClaimedRow::event).toList();
     }
@@ -200,8 +205,10 @@ class PspDispatchStore {
      */
     private void warnIfNotClaimed(int updated, UUID dispatchEventId, PspDispatchStatus status) {
         if (updated == 0) {
-            log.warn("確保していないディスパッチを {} にしようとした dispatchEventId={}",
-                    status, dispatchEventId);
+            log.atWarn()
+                    .addKeyValue("dispatchEventId", dispatchEventId.toString())
+                    .addKeyValue("targetStatus", status.name())
+                    .log("確保していないディスパッチの状態を更新しようとした");
         }
     }
 

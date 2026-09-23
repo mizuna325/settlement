@@ -802,6 +802,108 @@ Relayは**1バッチではなく1行ごと**に出し入れする。10件確保�
 
 **トレースの検証はログよりデータで行う方が確実だった。** 当初は最終段のログに載る traceId を見ようとしたが、`HandlePspWebhookService` は `NOT_APPLICABLE` のときしかログを出さず、正常系では観測できなかった。Outbox の行に記録された `traceparent` を比較する形にすると、タイミングにも依存しない。
 
+この「正常系にログが無い」状態そのものが REQ-NFR-008 に対する欠落だったため、§8.8 の基準を定めたうえで境界の2箇所にINFOを追加した。現在は `AuthorizationCycleTest#theSuccessfulPathEmitsCorrelatedLogs` がログ側からも確認している。
+
+### 8.8 ログ出力基準
+
+トレースが繋がっていても、ログが出ていなければ運用では追えない。出す場所と出さない場所、および1行の形を決める。
+
+#### 出す / 出さない
+
+判断の軸は層ではなく、**その1行だけが答えられる問いがあるか**である。
+
+| 出す | 理由 |
+| --- | --- |
+| 外部境界を越えた事実 | プロセスの外で起きたことは他に記録が残らない |
+| 業務上の判断を下した事実 | 「なぜその分岐になったか」はコードを読んでも再現できない |
+| 自力で回復しない異常 | 人手の対応が要る。ERROR |
+| 自力で回復する異常 | 頻度が上がれば問題。WARN |
+
+| 出さない | 理由 |
+| --- | --- |
+| メソッドの入口・出口 | トレースのspanが同じことをより正確に答える |
+| 素のDB読み書き | 同上 |
+| 同じ事実の二重出力 | 呼ぶ側と呼ばれる側の両方で出さない。**判断を持つ側**で出す |
+| 分岐しない中間経過 | 誰も問わない |
+
+**「adapter層で出す」は基準にならない。** adapterで出すべきなのは外部境界を越えた事実だけであり、判断の理由はapplication層にしかない。結果として出力箇所の大半はadapterに寄るが、それは境界がそこにあるためで、層そのものが理由ではない。
+
+量の目安は、正常な1注文あたりINFO数行。
+
+#### 1行の構成
+
+| 仕組み | 適用範囲 | 用途 |
+| --- | --- | --- |
+| メッセージ本文 | その行 | 発生した事実と、固定句として書ける事由 |
+| MDC | その処理中の全行 | 処理を識別するID |
+| `addKeyValue`(SLF4J fluent) | その行だけ | その事象固有の値 |
+
+MDCとkey-valueの境目は**トレース由来かどうかではなくスコープ**である。`paymentId` はトレースの仕組みと無関係だが、処理中の全行に付いてほしいのでMDCに置く。`attempts` はその送信1回の事実なのでkey-valueに置く。MDCに入れると後続の行にも同じ値が載ってしまう。
+
+**MDCに置くキー**
+
+| キー | 設定箇所 |
+| --- | --- |
+| `traceId` / `spanId` | Micrometerが自動で入れる |
+| `orderId` | `CreateOrderService`(保存後)、`RequestRefundService`、`PaymentOutcomeAdapter` |
+| `paymentId` | `PspWebhookController`、`PspDispatchRelay`、`FakePspController` |
+| `eventId` | `PspWebhookController` |
+| `dispatchEventId` | `PspDispatchRelay`、`FakePspController` |
+
+`PaymentOutcomeAdapter` は order コンテキストの入口であり、orderId が確定する最初の地点でもある。5つのUseCaseそれぞれで置くと散らばり、置き忘れても誰も気付かないため、ここに集約する。この区間のスレッドには payment 側の `paymentId` と `eventId` が既に載っているので、order 側のログにも両方が載る。
+
+#### 両コンテキストで出す
+
+order と payment は将来の分割を前提に分けている(§1)。片方にしかログが無い状態は、同一プロセスで動いているあいだだけ問題に見えないだけで、分割した瞬間に order 側が無音のサービスになる。したがって**注文の状態遷移は order 側でも記録する**。
+
+| 箇所 | レベル | 記録する事実 |
+| --- | --- | --- |
+| `CreateOrderService` | INFO | 注文を受け付け、与信を開始した |
+| `RequestRefundService` | INFO | 返金要求を受け付け、決済へ引き渡した |
+| `ConfirmOrderService` | INFO | 与信成立により確定した |
+| `CancelOrderService` | INFO | 与信拒否により取り消した |
+| `SettleOrderService` | INFO | 売上確定により完了した |
+| `FailOrderSettlementService` | WARN | 売上確定に失敗し要対応になった |
+| `RefundOrderService` | INFO | 返金成立により状態を更新した |
+
+`FailOrderSettlementService` だけ WARN にする。`SETTLEMENT_FAILED` は自動で解消しない終端で人手の対応が要るため(REQ-ORD-005)。ERROR にしないのは、システムの障害ではなくPSPが返した業務上の結果であるため。
+
+**payment 側のログと隣接する**点は承知のうえで受け入れる。`HandlePspWebhookService` の「通知を適用した」と `SettleOrderService` の「注文を完了した」は、同じ出来事を別のコンテキストが別の語彙で記録したものであり、二重出力ではない。1注文あたりのINFOは7行程度になる。
+
+`CreateOrderService` のログは、Relayが動いていない場合に注文が存在したことすらログに残らない状態を防ぐ意味もある。`customerId` は顧客の識別子なので載せない。返金要求の `reason` も顧客の自由入力なので載せない(必要なら `payment_refunds` から引ける)。
+
+一方、`ConfirmOrderService` などが呼ぶ `orderRepository.findById` / `save` 自体は記録しない。記録するのは遷移という業務上の事実であって、その実現手段ではない。
+
+#### メッセージ本文
+
+**値を埋め込まない固定文字列**にする。同じ種類の事象を数えられるようにするため。事実と事由の両方を書くが、事由が可変の場合はフィールドへ回す。
+
+| | 本文 | フィールド |
+| --- | --- | --- |
+| 事由が事象の種類そのもの | 「試行上限に達したため送信を打ち切った」 | — |
+| 事由が可変 | 「現在の状態に適用できない通知を受信した」 | `reason`、`error.message` |
+
+#### フォーマット
+
+`logging.structured.format.console=ecs`。1行1JSON。自動で入るのは `@timestamp` / `log.level` / `log.logger` / `message` / `process.pid` / `process.thread.name` / `service.name` / `ecs.version`、`Throwable` を渡した場合の `error.type` / `error.message` / `error.stack_trace`。MDCとkey-valueはいずれもトップレベルに平坦に出る。
+
+- キーは **lowerCamelCase**。既存の `traceId` / `spanId` に揃える
+- ECSの予約名前空間を先頭に使わない(`log` `process` `service` `error` `event` `ecs` `message` `tags` `trace` `span` `http` `url` `user`)
+- 値は文字列か数値で渡す。`Instant` や列挙子は `toString()` / `name()` で明示的に変換する
+- IDは素の値を渡す。値オブジェクトをそのまま渡すと `PaymentId[paymentId=...]` と出る
+
+**出してはならないもの**: リクエスト/レスポンス本文の丸ごと出力(量とPII)、署名とシークレット、`e.getMessage()` をメッセージ本文へ連結すること(`error.message` と二重になる)。
+
+`Idempotency-Key` は資格情報ではなく送信側の `dispatchEventId` そのものなので、その名前で出す。Outboxの行とPSPの受付を同じフィールドで突き合わせられる。
+
+#### ECS正準との差
+
+MicrometerがMDCへ入れるキーは `traceId` / `spanId` であり、ECS正準の `trace.id` / `span.id` ではない。`management.tracing.*` に改名用のプロパティは存在しない。Elasticへ投入しないかぎり実害がないため、このまま受け入れる。
+
+#### テストでの扱い
+
+テストの出力は平文のままとする(`src/test/resources/application.properties` に `logging.structured.format.console` を写さない)。失敗時に読むのは人間であり、1行1JSONは追いにくい。トレースやフィールドの検証は `ListAppender` からMDCと `getKeyValuePairs()` を直接読む形にしてあり、JSONの整形には依存しない。
+
 ---
 
 ## 9. CI

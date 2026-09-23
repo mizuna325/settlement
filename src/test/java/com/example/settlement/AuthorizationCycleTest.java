@@ -16,7 +16,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -78,6 +81,15 @@ class AuthorizationCycleTest {
 
     /** 適用できなかった理由を知るのはサービス側なので、WARN もそちらに出る。 */
     private static final String APPLYING_SERVICE = "com.example.settlement.payment.application.service.HandlePspWebhookService";
+
+    /** PSPへ送った事実を残すのは境界側なので、INFO はこちらに出る。 */
+    private static final String DISPATCH_RELAY = "com.example.settlement.payment.adapter.out.outbox.PspDispatchRelay";
+
+    /** order 側の起点。POST /orders のスレッドで出る。 */
+    private static final String ORDER_CREATE = "com.example.settlement.order.application.service.CreateOrderService";
+
+    /** order 側の終点。Webhook が届いたスレッドで出る。 */
+    private static final String ORDER_SETTLE = "com.example.settlement.order.application.service.SettleOrderService";
 
     private static final int PORT = freePort();
 
@@ -232,6 +244,99 @@ class AuthorizationCycleTest {
 
         // span は境界ごとに新しくなる。同じ span のまま運ばれているわけではない。
         assertNotEquals(traceparents.get(0).split("-")[2], traceparents.get(1).split("-")[2]);
+    }
+
+    /**
+     * REQ-NFR-008 の「全ログ」にあたる部分。トレースが繋がっているだけでなく、
+     * 正常系にも実際にログが出ていて、それが1本に載っていることを見る。
+     *
+     * <p>
+     * {@link #theWholeCycleStaysInOneTrace} は Outbox の列を見ており、ログ出力には
+     * 触れていない。データ上で繋がっていてもログが1行も出なければ運用では追えないため、
+     * ここを別に確かめる。
+     *
+     * <p>
+     * あわせて出力の形も見る。業務IDがメッセージ本文への埋め込みではなく、
+     * MDC と key-value のフィールドとして出ていること(design.md §8.8)。
+     * ここが崩れると構造化ログとして検索できなくなるが、動作は変わらないため
+     * テストで押さえないと気付けない。
+     */
+    @Test
+    @DisplayName("REQ-NFR-008: 正常系のログが1本のトレースに載り、業務IDがフィールドとして出る")
+    void theSuccessfulPathEmitsCorrelatedLogs() throws Exception {
+        ListAppender<ILoggingEvent> relayLogs = captureLogsOf(DISPATCH_RELAY);
+        ListAppender<ILoggingEvent> serviceLogs = captureLogsOf(APPLYING_SERVICE);
+        ListAppender<ILoggingEvent> createLogs = captureLogsOf(ORDER_CREATE);
+        ListAppender<ILoggingEvent> settleLogs = captureLogsOf(ORDER_SETTLE);
+
+        UUID orderId;
+        try {
+            orderId = placeOrder(1000);
+            awaitOrderStatus(orderId, "SETTLED");
+        } finally {
+            detach(DISPATCH_RELAY, relayLogs);
+            detach(APPLYING_SERVICE, serviceLogs);
+            detach(ORDER_CREATE, createLogs);
+            detach(ORDER_SETTLE, settleLogs);
+        }
+
+        UUID paymentId = paymentIdOf(orderId);
+        // Relay はテーブル全体を走査するため、他のテストが残した行を拾いうる。
+        // MDCの値で絞る。この絞り込み自体が、IDがMDCに載っていることの確認にもなっている。
+        List<ILoggingEvent> sent = eventsFor(relayLogs, "paymentId", paymentId);
+        List<ILoggingEvent> applied = eventsFor(serviceLogs, "paymentId", paymentId);
+        List<ILoggingEvent> created = eventsFor(createLogs, "orderId", orderId);
+        List<ILoggingEvent> settled = eventsFor(settleLogs, "orderId", orderId);
+
+        assertEquals(2, sent.size(), "与信と売上確定でPSPへ2回送っているはず");
+        assertEquals(2, applied.size(), "与信結果と売上確定結果で2回適用しているはず");
+        assertEquals(1, created.size(), "注文の受付が記録されていない");
+        assertEquals(1, settled.size(), "注文の完了が記録されていない");
+
+        // order と payment は別コンテキストで、間に4つの非同期境界がある。
+        // それでも全行が同じ traceId を持つ。ここが分かれると、将来サービスを分割したときに
+        // 片方のログだけを見ても全体が追えない状態になる。
+        Set<String> traceIds = Stream.of(sent, applied, created, settled)
+                .flatMap(List::stream)
+                .map(event -> event.getMDCPropertyMap().get("traceId"))
+                .collect(Collectors.toSet());
+        assertEquals(1, traceIds.size(), "正常系のログが複数のトレースに分かれている: " + traceIds);
+        assertNotNull(traceIds.iterator().next(), "ログに traceId が載っていない");
+
+        ILoggingEvent applyLog = applied.get(0);
+        // 本文は固定。値が混ざると同じ事象を数えられなくなる。
+        assertEquals("PSPの通知を決済へ適用した", applyLog.getMessage());
+        assertEquals(orderId.toString(), keyValueOf(applyLog, "orderId"));
+        assertNotNull(applyLog.getMDCPropertyMap().get("eventId"), "eventId がMDCに載っていない");
+
+        ILoggingEvent sendLog = sent.get(0);
+        assertEquals("PSPへ送信し、受理された", sendLog.getMessage());
+        assertEquals("AUTHORIZE", keyValueOf(sendLog, "operation"));
+        assertNotNull(sendLog.getMDCPropertyMap().get("dispatchEventId"),
+                "dispatchEventId がMDCに載っていない");
+
+        // order 側の終端。状態はフィールドで出るため、本文に埋め込まれていない。
+        ILoggingEvent settleLog = settled.get(0);
+        assertEquals("売上が確定したため注文を完了した", settleLog.getMessage());
+        assertEquals("SETTLED", keyValueOf(settleLog, "orderStatus"));
+        // order の遷移は決済の通知から駆動される。payment 側のIDも同じ行に載っている。
+        assertEquals(paymentId.toString(), settleLog.getMDCPropertyMap().get("paymentId"));
+    }
+
+    /** MDCの指定キーが一致するログだけを取り出す。 */
+    private static List<ILoggingEvent> eventsFor(ListAppender<ILoggingEvent> appender, String key, UUID value) {
+        return appender.list.stream()
+                .filter(event -> value.toString().equals(event.getMDCPropertyMap().get(key)))
+                .toList();
+    }
+
+    /** SLF4J の fluent API で付けた値を読む。MDC とは別の入れ物に入る。 */
+    private static String keyValueOf(ILoggingEvent event, String key) {
+        return event.getKeyValuePairs().stream()
+                .filter(pair -> pair.key.equals(key))
+                .map(pair -> String.valueOf(pair.value))
+                .findFirst()
+                .orElse(null);
     }
 
     /** REQ-ORD-009: 返金を要求する。受け付けは 202 で、成立はWebhook到達後。 */

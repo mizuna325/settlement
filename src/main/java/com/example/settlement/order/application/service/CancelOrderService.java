@@ -1,5 +1,7 @@
 package com.example.settlement.order.application.service;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -10,6 +12,9 @@ import com.example.settlement.order.domain.OrderId;
 
 @Service
 class CancelOrderService implements CancelOrderUseCase {
+
+    private static final Logger log = LoggerFactory.getLogger(CancelOrderService.class);
+
     private final OrderRepository orderRepository;
 
     CancelOrderService(OrderRepository orderRepository) {
@@ -22,6 +27,8 @@ class CancelOrderService implements CancelOrderUseCase {
         Order order = orderRepository.findById(orderId).orElseThrow();
         order.cancel();
         orderRepository.save(order);
-
+        log.atInfo()
+                .addKeyValue("orderStatus", order.getOrderStatus().name())
+                .log("与信が拒否されたため注文を取り消した");
     }
 }

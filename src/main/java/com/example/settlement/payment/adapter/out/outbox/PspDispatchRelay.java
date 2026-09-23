@@ -6,6 +6,8 @@ import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.slf4j.MDC.MDCCloseable;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -68,9 +70,23 @@ class PspDispatchRelay {
             // 行ごとにトレースを復元する。バッチ単位ではない。
             // 1周で10件扱えば10回の出し入れになる(design.md §8.6)。
             Span span = traceContext.startSpan(event.traceparent(), "psp-dispatch");
-            try (Tracer.SpanInScope scope = traceContext.tracer().withSpan(span)) {
+            // MDCも行ごとに出し入れする。この1件の処理中に出る全行(送信成功・失敗の
+            // どちらも)に識別子が載る(design.md §8.8)。
+            try (Tracer.SpanInScope scope = traceContext.tracer().withSpan(span);
+                    MDCCloseable dispatchEventId = MDC.putCloseable(
+                            "dispatchEventId", event.dispatchEventId().toString());
+                    MDCCloseable paymentId = MDC.putCloseable(
+                            "paymentId", event.paymentId().toString())) {
                 // ② 送信(トランザクション外)
                 send(event);
+                // 外部へ渡った事実はプロセスの外にしか痕跡が残らないため、ここで記録する。
+                // markSent の前に出すのは、③が落ちても「送った」事実は失わないようにするため。
+                log.atInfo()
+                        .addKeyValue("operation", event.operation())
+                        .addKeyValue("amount", event.amount())
+                        .addKeyValue("currency", event.currency())
+                        .addKeyValue("attempts", event.attempts())
+                        .log("PSPへ送信し、受理された");
                 // ③ 結果記録(トランザクション2)
                 pspDispatchStore.markSent(event.dispatchEventId());
             } catch (RuntimeException e) {
@@ -114,15 +130,21 @@ class PspDispatchRelay {
      * 打ち切りは自動で回復せず人手の対応が要るため ERROR、再送予約はいずれ解消するため WARN。
      */
     private void recordFailure(PspDispatchEventEntity event, RuntimeException cause) {
+        // dispatchEventId と paymentId は呼び出し元のMDCに載っている。ここでは足さない。
         if (event.attempts() >= properties.maxAttempts()) {
             pspDispatchStore.markFailed(event.dispatchEventId());
-            log.error("試行上限に達したため送信を打ち切った dispatchEventId={} attempts={}/{}",
-                    event.dispatchEventId(), event.attempts(), properties.maxAttempts(), cause);
+            log.atError().setCause(cause)
+                    .addKeyValue("attempts", event.attempts())
+                    .addKeyValue("maxAttempts", properties.maxAttempts())
+                    .log("試行上限に達したため送信を打ち切った");
         } else {
             Instant nextAttemptAt = Instant.now().plus(backoff(event.attempts()));
             pspDispatchStore.scheduleRetry(event.dispatchEventId(), nextAttemptAt);
-            log.warn("PSPへの送信に失敗した。再送を予約した dispatchEventId={} attempts={}/{} nextAttemptAt={}",
-                    event.dispatchEventId(), event.attempts(), properties.maxAttempts(), nextAttemptAt, cause);
+            log.atWarn().setCause(cause)
+                    .addKeyValue("attempts", event.attempts())
+                    .addKeyValue("maxAttempts", properties.maxAttempts())
+                    .addKeyValue("nextAttemptAt", nextAttemptAt.toString())
+                    .log("PSPへの送信に失敗した。再送を予約した");
         }
     }
 

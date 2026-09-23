@@ -60,8 +60,10 @@ class HandlePspWebhookService implements HandlePspWebhookUseCase {
         }
         Optional<Payment> found = paymentRepository.findById(notification.paymentId());
         if (found.isEmpty()) {
-            log.warn("通知された決済が存在しない。eventId={}, paymentId={}",
-                    notification.eventId(), notification.paymentId());
+            // eventId と paymentId はMDCに載っている(PspWebhookController)。ここでは足さない。
+            log.atWarn()
+                    .addKeyValue("status", notification.status().name())
+                    .log("通知された決済が存在しない");
             return WebhookOutcome.NOT_APPLICABLE;
         }
         Payment payment = found.get();
@@ -106,13 +108,25 @@ class HandlePspWebhookService implements HandlePspWebhookUseCase {
                     paymentRepository.save(payment);
                 }
             }
+            // 正常系で唯一の記録(design.md §8.8)。ここが「判断を下した側」にあたる。
+            // 通知の status と、適用後に決済が落ち着いた状態の両方を残す。前者だけでは
+            // 「AUTHORIZED を受けて CAPTURING まで進んだ」のか「何も進まなかった」のかが分からない。
+            // orderId は注文側から一連を引くための手掛かり。この行でしか取れないため key-value。
+            log.atInfo()
+                    .addKeyValue("status", notification.status().name())
+                    .addKeyValue("paymentStatus", payment.getPaymentStatus().name())
+                    .addKeyValue("orderId", payment.getOrderId().orderId().toString())
+                    .log("PSPの通知を決済へ適用した");
             return WebhookOutcome.APPLIED;
         } catch (IllegalStateException e) {
             // 到達順序は保証されないため、現在の状態に適用できない通知は異常ではない(REQ-PSP-007)。
             // ただし理由を知っているのはここだけなので、記録せずに返すと追跡できなくなる。
-            log.warn("現在の状態に適用できない通知を受信した。eventId={}, paymentId={}, status={}, 決済の状態={}, 理由={}",
-                    notification.eventId(), notification.paymentId(), notification.status(),
-                    payment.getPaymentStatus(), e.getMessage());
+            // 事由は集約が投げる例外文言で可変のため、本文ではなく reason に載せる。
+            log.atWarn()
+                    .addKeyValue("status", notification.status().name())
+                    .addKeyValue("paymentStatus", payment.getPaymentStatus().name())
+                    .addKeyValue("reason", e.getMessage())
+                    .log("現在の状態に適用できない通知を受信した");
             return WebhookOutcome.NOT_APPLICABLE;
         }
     }

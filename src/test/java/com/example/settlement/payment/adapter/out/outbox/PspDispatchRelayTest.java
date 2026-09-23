@@ -134,9 +134,14 @@ class PspDispatchRelayTest {
         assertEquals((short) 2, attemptsOf(dispatchEventId));
 
         // 回収は運用上の異常であり、黙って進めてはならない(design.md §5.1)。
+        // 対象のIDはメッセージ本文ではなく key-value のフィールドに載る(design.md §8.8)。
+        // 本文は固定文字列なので、そちらを検索しても行を特定できない。
         assertTrue(logs.list.stream()
                 .anyMatch(event -> event.getLevel() == Level.WARN
-                        && event.getFormattedMessage().contains(dispatchEventId.toString())),
+                        && event.getKeyValuePairs() != null
+                        && event.getKeyValuePairs().stream()
+                                .anyMatch(pair -> "dispatchEventId".equals(pair.key)
+                                        && dispatchEventId.toString().equals(pair.value))),
                 "回収を知らせるWARNログが出ていない");
     }
 
