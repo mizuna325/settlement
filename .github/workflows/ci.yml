@@ -29,23 +29,20 @@ jobs:
     services:
       postgres:
         image: postgres:17
+        # テスト専用DB(design.md §9.1)。ここではアプリを起動しないため競合は起きないが、
+        # ローカルと同じ綴りにしておく。接続先は surefire が固定するので、
+        # 環境変数(SPRING_DATASOURCE_*)はここでは渡さない。渡しても上書きされる。
         env:
-          POSTGRES_DB: settlement
+          POSTGRES_DB: settlement_test
           POSTGRES_USER: demo
           POSTGRES_PASSWORD: demo
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U demo -d settlement"
+          --health-cmd "pg_isready -U demo -d settlement_test"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
-
-    env:
-      # アプリのDB設定は環境変数から注入する(compose.yaml と同じ形)。
-      SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/settlement
-      SPRING_DATASOURCE_USERNAME: demo
-      SPRING_DATASOURCE_PASSWORD: demo
 
     steps:
       - uses: actions/checkout@v4
@@ -57,6 +54,8 @@ jobs:
           java-version: '21'
           cache: maven
 
+      # テストの接続先は pom.xml の ci プロファイルが決める。GitHub Actions が
+      # 立てる CI=true で有効になり、localhost:5432 の settlement_test を向く。
       - name: Build and test
         run: ./mvnw -B verify
 

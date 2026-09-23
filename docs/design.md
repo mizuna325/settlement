@@ -1022,6 +1022,50 @@ CIが通ることは、次が同時に満たされていることを意味する
 | 結合テスト | Outbox・Relay・Webhookの経路、署名検証、冪等性 |
 | E2E | `POST /orders`から`SETTLED`まで人手を介さず到達すること |
 
+### 9.1 テスト用DBを開発用から分ける
+
+**開発中のアプリを起動したままテストを流すと、原因の分かりにくい失敗が出る。** 実際に踏んだ。
+
+アプリ側は `settlement.psp.dispatch.enabled=true` で `PspDispatchRelay` が1秒ごとに `payment_psp_dispatch_events` を走査する。テストと同じDBを見ていると、**テストが作った行をアプリが確保して実際にPSPへ送ってしまう**。
+
+現れ方は次のようになる。どれもテストのコードを読んでも理由が分からない。
+
+| 症状 | 実際に起きていること |
+| --- | --- |
+| `staleSendingRowIsReclaimed: expected SENT but was SENDING` | アプリのRelayが先に行を確保した |
+| `authorizedResultReachesTheReceiver: expected 1 but was 2` | 横取りされた行が送信され、余分なWebhookが記録された |
+| `mvn clean test` だけ緑 | コンパイルの数十秒間にアプリが行を捌き切り、たまたま衝突しなかった |
+
+最初はフレークに見えるが、**再現性がある**。アプリを起動していれば落ち、止めれば通る。
+
+#### 分け方
+
+`settlement` とは別に `settlement_test` を作り、テストだけがそちらを向く。
+
+接続先は **`pom.xml` の maven-surefire-plugin がシステムプロパティで渡す**。`src/test/resources/application.properties` に書いても効かない。Spring Boot の優先順位が
+
+```
+@SpringBootTest(properties) > システムプロパティ > OS環境変数 > application.properties
+```
+
+であり、`compose.yaml` と CI が渡す `SPRING_DATASOURCE_URL` は環境変数だからである。環境変数に勝てるのはシステムプロパティ以上の層だけになる。
+
+DBの作成は `docker/db-init/01-create-test-database.sql`。PostgreSQL のデータディレクトリが空のときだけ実行されるため、**既存のボリュームでは走らない**。一度だけ手で作るか、`docker compose down -v` で作り直す。
+
+```bash
+psql -h db -U demo -d settlement -c 'CREATE DATABASE settlement_test OWNER demo;'
+```
+
+CI ではアプリを起動しないため競合は起きないが、綴りはローカルと揃えている。サービスコンテナはランナーの `localhost` に出るため、ホスト名だけが変わる。
+
+**この差はコマンドラインの `-D` ではなく `pom.xml` の `ci` プロファイルで吸収する。** GitHub Actions が常に立てる `CI=true` で有効になるので、ワークフロー側は `./mvnw -B verify` のままでよい。
+
+`-D` をワークフローに書くと、`localhost` という**CIでしか正しくない綴りが手元へコピーできる形で残る**。devcontainer の中で同じ行を実行すると `Connection refused` になり、なぜ失敗したのかが分かりにくい。同じ理由で OTLP の送出先も既定値をサービス名にしてある(§8.3)。
+
+#### Testcontainers を使わない理由
+
+本来はこれが定石だが、採れない。開発は devcontainer の中で行っており、**コンテナ内に Docker クライアントが無い**。Testcontainers はコンテナを起動できる環境を前提にするため、docker-outside-of-docker の構成を足すことになる。得られるものに対して構成が重くなるため、DBを分けるところまでに留める。
+
 ### この演習での限界
 
 デプロイは行わない。本番環境が無いため、CIはテストの実行までで止まる。

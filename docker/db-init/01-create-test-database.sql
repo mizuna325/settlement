@@ -1,0 +1,13 @@
+-- テスト専用のデータベースを作る(design.md §9.1)。
+--
+-- 開発中のアプリと自動テストが同じDBを共有していると、アプリ側の PspDispatchRelay
+-- (settlement.psp.dispatch.enabled=true)が1秒ごとに payment_psp_dispatch_events を
+-- 走査し、テストが作った行を確保して実際にPSPへ送ってしまう。
+-- テストから見ると「確保したはずの行が別の状態になっている」「送っていない Webhook が
+-- 届いている」という形で現れ、原因が非常に追いにくい。
+--
+-- このスクリプトは PostgreSQL のデータディレクトリが空のときだけ実行される。
+-- 既存のボリュームがある場合は一度だけ手で作る:
+--   psql -h db -U demo -d settlement -c 'CREATE DATABASE settlement_test OWNER demo;'
+-- もしくは docker compose down -v でボリュームごと作り直す。
+CREATE DATABASE settlement_test OWNER demo;

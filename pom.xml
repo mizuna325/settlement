@@ -29,7 +29,39 @@
 	<properties>
 		<java.version>21</java.version>
 		<archunit.version>1.5.0</archunit.version>
+		<!--
+			テストの接続先(design.md §9.1)。既定は devcontainer から見た綴りで、
+			compose のサービス名 db を引く。CI ではサービスコンテナがランナーの
+			localhost に出るため、下の ci プロファイルが差し替える。
+		-->
+		<test.datasource.url>jdbc:postgresql://db:5432/settlement_test</test.datasource.url>
+		<test.datasource.username>demo</test.datasource.username>
+		<test.datasource.password>demo</test.datasource.password>
 	</properties>
+
+	<profiles>
+		<!--
+			CI 環境での接続先。GitHub Actions が常に CI=true を立てるので、
+			ワークフロー側は ./mvnw -B verify のままでよい。
+
+			コマンドラインの -D で渡す形にはしない。localhost の綴りは CI でしか
+			正しくなく、devcontainer の中で同じ行をそのまま実行すると
+			Connection refused になる。手元へ持ち込めない値をワークフローに
+			書いておくと、コピーして失敗するまで気付けない。
+		-->
+		<profile>
+			<id>ci</id>
+			<activation>
+				<property>
+					<name>env.CI</name>
+					<value>true</value>
+				</property>
+			</activation>
+			<properties>
+				<test.datasource.url>jdbc:postgresql://localhost:5432/settlement_test</test.datasource.url>
+			</properties>
+		</profile>
+	</profiles>
 	<dependencies>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -143,6 +175,29 @@
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
+			</plugin>
+			<!--
+				テストの接続先を開発用DBから切り離す(design.md §9.1)。
+
+				ここで指定しないと、compose.yaml や CI が渡す SPRING_DATASOURCE_URL に
+				従って開発用の settlement を向く。その状態で ./mvnw spring-boot:run を
+				動かしたままテストを流すと、アプリ側の PspDispatchRelay が
+				テストの作った Outbox 行を確保して実際にPSPへ送ってしまう。
+
+				application.properties ではなくシステムプロパティで渡す。Spring Boot の
+				優先順位は「システムプロパティ > OS環境変数 > application.properties」で、
+				環境変数に勝てるのがここだけであるため。
+			-->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<systemPropertyVariables>
+						<spring.datasource.url>${test.datasource.url}</spring.datasource.url>
+						<spring.datasource.username>${test.datasource.username}</spring.datasource.username>
+						<spring.datasource.password>${test.datasource.password}</spring.datasource.password>
+					</systemPropertyVariables>
+				</configuration>
 			</plugin>
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>

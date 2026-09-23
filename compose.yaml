@@ -43,6 +43,9 @@ services:
       POSTGRES_PASSWORD: demo
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # テスト専用DBを作る。データディレクトリが空のときだけ実行される点に注意
+      # (既存ボリュームでは走らない)。詳細はスクリプト内のコメント。
+      - ./docker/db-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U demo -d demo"]
       interval: 5s
