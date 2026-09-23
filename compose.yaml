@@ -16,6 +16,24 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      jaeger:
+        condition: service_started
+
+  # 可観測性の第2段階(design.md §8.3)。トレースの保存先と閲覧UI。
+  # all-in-one は collector / query / storage を1プロセスにまとめたもの。
+  # 保存はメモリなので再起動で消えるが、デモではそれで足りる。
+  # 落ちていてもアプリは動く。送信に失敗してもログに残るだけ。
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      # 1.35 以降は既定で有効だが、明示しておく。無効だと 4318 が開かない。
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      # 16686: 閲覧UI。ホストのブラウザから開く
+      - "16686:16686"
+      # 4318: OTLP over HTTP の受け口。アプリからは jaeger:4318 で届くため
+      #       本来は公開不要だが、コンテナ外から送って試せるように開けておく
+      - "4318:4318"
 
   db:
     image: postgres:17

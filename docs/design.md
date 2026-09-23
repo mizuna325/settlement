@@ -748,11 +748,57 @@ PspWebhookController ─────────────────┐ 同�
 | | アプリ | エクスポーター | 送出先 | 追加コンテナ | 状態 |
 |---|---|---|---|---|---|
 | 第1段階 | OTel SDK | なし | spanは捨てられ、IDだけがログに残る | 0 | **実装済み** |
-| 第2段階 | OTel SDK | OTLP | Jaeger | 1 | 未着手 |
+| 第2段階 | OTel SDK | OTLP | Jaeger | 1 | **実装済み** |
 
-**どちらも OpenTelemetry である。** 違いは送出先だけで、伝搬形式・コード・永続化する値はすべて共通。第1段階から第2段階への移行は `spring-boot-starter-opentelemetry` への差し替えとプロパティの追加で済み、アプリケーションのコードは変わらない。
+**どちらも OpenTelemetry である。** 違いは送出先だけで、伝搬形式・コード・永続化する値はすべて共通。
 
 ログはSpring Bootの構造化ログ機能でJSONにする(`logging.structured.format.console=ecs`)。MDCの内容が各行のフィールドとして出るため、追加の依存は要らない。
+
+#### 第2段階で実際に変わったもの
+
+**アプリケーションのコードは1行も変わらない。** 変わったのは次の2点だけで、この主張は `OtlpExportTest` が裏付けている(依存を外すとこのテストだけが落ちる)。
+
+```xml
+<!-- pom.xml -->
+<dependency>
+  <groupId>io.opentelemetry</groupId>
+  <artifactId>opentelemetry-exporter-otlp</artifactId>
+  <scope>runtime</scope>
+</dependency>
+```
+
+```properties
+# application.properties
+management.opentelemetry.tracing.export.otlp.endpoint=http://jaeger:4318/v1/traces
+```
+
+当初は `spring-boot-starter-opentelemetry` への差し替えを想定していたが、**採らなかった**。あの starter は `spring-boot-starter-micrometer-metrics` と `micrometer-registry-otlp` まで引き込む。メトリクスを使っていない現状では余分な依存になる。必要なのはエクスポーターの成果物1つで、プロパティ(`management.opentelemetry.tracing.*`)は既に入っている `spring-boot-micrometer-tracing-opentelemetry` が定義している。
+
+なお `management.otlp.tracing.endpoint` という短い綴りも通るが、Spring Boot 4.0 で deprecation level が `error` になっている。上記の長い方が現行の綴り。
+
+#### テストでは送出を止める
+
+`src/test/resources/application.properties` で `management.tracing.export.otlp.enabled=false` にしている。テスト中に Jaeger は居ないため、有効のままだと全テストで接続エラーが出続ける。
+
+止めるのは**送出だけ**である点が重要で、span の生成・伝搬とMDCへの注入は動いたまま残る。`management.tracing.export.enabled`(otlp の付かない方)を false にすると伝搬ごと止まり、トレースの継続性を見ているテストが軒並み壊れる。
+
+送出そのものは `OtlpExportTest` が確認する。JDK内蔵のHTTPサーバーを OTLP の受け口に見立てて立て、終了した span の traceId が protobuf の本文に現れることを見る。Docker の有無に依存しないため、CIでもそのまま走る。
+
+#### 動かして見る
+
+```bash
+docker compose up -d
+./mvnw spring-boot:run
+
+curl -X POST localhost:8080/orders \
+  -H 'Content-Type: application/json' \
+  -d '{"customerId":"11111111-1111-1111-1111-111111111111",
+       "lines":[{"productId":"SKU-1","quantity":1,"amount":1000,"currency":"JPY"}]}'
+```
+
+`http://localhost:16686` を開き、サービス `settlement` のトレースを選ぶ。**1注文が1本のトレースになっており、その中に §8.1 の4つの非同期境界がすべて入れ子で現れる**。Outbox を経由する箇所(境界①)と `TaskScheduler` の遅延送信(境界③)は、IDをデータとして持ち回らなければ切れていた箇所で、ここが繋がって見えることが第1段階からの成果にあたる。
+
+同じ traceId が構造化ログの各行にも載っているため、ログとトレースは `traceId` で突き合わせられる。Jaeger 自体はログを持たないので、相関は手作業になる。自動で飛べる形にするなら Loki と Grafana が要るが、コンテナが3つ増えるため本演習では採らない。
 
 ### 8.4 OpenTelemetry Collector を挟まない
 

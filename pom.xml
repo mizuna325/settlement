@@ -47,15 +47,28 @@
 		<!--
 			可観測性(design.md §8)。伝搬形式は W3C Trace Context。
 			traceId / spanId が自動で MDC に入り、構造化ログの各行に載る。
+			management.opentelemetry.tracing.* のプロパティもこの成果物が定義する。
 
-			spring-boot-starter-opentelemetry ではなくこの成果物を選ぶ。
-			前者は OTLP エクスポーターまで含むため、送出先が無い第1段階では
-			接続エラーが出続ける。ここは自動設定とブリッジだけでよい。
-			第2段階(Jaegerへ送る)へ移るときに starter へ差し替える。
+			spring-boot-starter-opentelemetry は使わない。あちらは
+			spring-boot-starter-micrometer-metrics と micrometer-registry-otlp まで
+			引き込むため、メトリクスを使っていない現状では余分になる(design.md §8.3)。
 		-->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
+		</dependency>
+		<!--
+			第2段階(design.md §8.3)。span を OTLP で Jaeger へ送る。
+			これが classpath に無いと span は生成されるだけで捨てられ、IDがログに
+			残るのみになる。アプリケーションのコードはこの依存の有無で変わらない。
+
+			runtime スコープ。コンパイル時に参照する型は無く、自動設定が
+			classpath の有無だけを見て有効化を判断するため。
+		-->
+		<dependency>
+			<groupId>io.opentelemetry</groupId>
+			<artifactId>opentelemetry-exporter-otlp</artifactId>
+			<scope>runtime</scope>
 		</dependency>
 		<!--
 			RestClient.Builder の自動設定。観測機能が組み込まれた Builder が Bean として
