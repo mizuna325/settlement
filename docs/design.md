@@ -126,7 +126,9 @@ com.example.settlement
 │           ├── persistence         # 永続化専用モデル(Payment集約丸ごと) + マッパー + Repository実装
 │           ├── outbox               # PspDispatchEventEntity, PspDispatchStatus,
 │           │                        # PspDispatchQueueAdapter(PspDispatchQueuePortの実装),
-│           │                        # PspDispatchRelay(@Scheduled), PspDispatchStore, PspDispatchProperties
+│           │                        # PspDispatchRelay(走査の中身),
+│           │                        # PspDispatchScheduler(@Scheduled。起動の契機のみ),
+│           │                        # PspDispatchStore, PspDispatchProperties
 │           ├── gateway               # PspClient(RestClient)。PspDispatchRelayが送信に使う
 │           └── idempotency            # WebhookEventJdbcStore(受信側の冪等性),
 │                                      # WebhookEventCleaner(@Scheduled。REQ-NFR-007), WebhookEventProperty
@@ -429,7 +431,7 @@ sequenceDiagram
 
 ## 5. 外部PSP境界の実装方針
 
-- `PspDispatchQueuePort`（application/port.out）に「PSPへ送るべきコマンドをキューに積む」操作を定義。実際の送信は`adapter.out.outbox.PspDispatchRelay`(`@Scheduled`)が担い、`adapter.out.gateway.PspClient`(RestClient)でHTTP呼び出しする。
+- `PspDispatchQueuePort`（application/port.out）に「PSPへ送るべきコマンドをキューに積む」操作を定義。実際の送信は`adapter.out.outbox.PspDispatchRelay`が担い、`adapter.out.gateway.PspClient`(RestClient)でHTTP呼び出しする。定期実行の契機は`PspDispatchScheduler`(`@Scheduled`)が別クラスとして与える(理由は§9.1)。
 - **ディスパッチの走査と送信**: 詳細は§5.1。
 - **送信失敗時**: 指数バックオフで再送し、上限(REQ-NFR-002)を超えたレコードは`FAILED`として送信を止める。
 - **送信側の冪等性**: `Idempotency-Key`にはディスパッチレコードのIDをそのまま用い、リトライ時も同じ値を送る。settlement側にキーは記録しない。受付済みキーの判定はPSP側の責務であり、`payment_psp_idempotency_keys`は`pspsimulator`が読み書きする([ADR-0002](./adr/0002-idempotency-key-store-on-psp-side.md))。
@@ -1061,6 +1063,47 @@ CI ではアプリを起動しないため競合は起きないが、綴りは�
 **この差はコマンドラインの `-D` ではなく `pom.xml` の `ci` プロファイルで吸収する。** GitHub Actions が常に立てる `CI=true` で有効になるので、ワークフロー側は `./mvnw -B verify` のままでよい。
 
 `-D` をワークフローに書くと、`localhost` という**CIでしか正しくない綴りが手元へコピーできる形で残る**。devcontainer の中で同じ行を実行すると `Connection refused` になり、なぜ失敗したのかが分かりにくい。同じ理由で OTLP の送出先も既定値をサービス名にしてある(§8.3)。
+
+#### テスト同士も同じ形で競合していた
+
+DBを分けても、**テスト間の競合は残っていた**。相手が外部のアプリからテスト自身に変わっただけで、構図は同じである。
+
+```
+PspDispatchRelayFailureTest.claimAndSendAreSeparateTransactions
+  expected: <1> but was: <0>     ← 誰も行を確保していない
+```
+
+ログを見ると答えが出ていた。
+
+```
+14:10:59.312  [main]          コンテキスト起動完了
+14:10:59.335  [scheduling-1]  確保していないディスパッチの状態を更新しようとした
+14:10:59.335  [scheduling-1]  PSPへの送信に失敗した dispatchEventId=bcfb9721...
+14:10:59.335  [main]          PSPへの送信に失敗した dispatchEventId=91facfbc...
+```
+
+`scheduling-1` が `main` と同じミリ秒に走っている。`polling-interval=1h` を指定していたにもかかわらずである。
+
+**`@Scheduled(fixedDelay)` は初回をコンテキスト起動直後に実行する。** 間隔をどれだけ長くしても、その1回だけは必ず走る。起動完了からテスト開始までは23msしかなく、`@BeforeEach` の挿入と競合していた。
+
+#### 原因は条件の付け方にあった
+
+以前は `PspDispatchRelay` が2つの関心を同時に持っていた。
+
+```java
+@Component
+@ConditionalOnProperty("settlement.psp.dispatch.enabled")  // Beanが存在するか
+class PspDispatchRelay {
+    @Scheduled(fixedDelayString = "...")                   // 自動で走るか
+    void relay() { ... }
+}
+```
+
+走査を手で呼びたいテストは Bean が欲しいだけだが、`enabled=false` にすると Bean ごと消える。やむなく `true` にすると、スケジューラも付いてくる。**「Beanの有無」と「自動起動の有無」を1つのプロパティで決めていたことが原因**である。
+
+起動の契機だけを `PspDispatchScheduler` に切り出した。`enabled=false` で消えるのはこちらだけで、Relay の Bean は残る。テストは注入して `relay()` を直接呼べばよく、裏で走るものは何も無い。
+
+`@BeforeEach` で `ScheduledTask::cancel` する案は採らない。初回実行は `@BeforeEach` が動く時点で既に in-flight であり、cancel は実行中のものを止めないため、取りこぼす。**そもそもスケジュールさせない**方が確実で、かつ設計としても素直になる。
 
 #### Testcontainers を使わない理由
 

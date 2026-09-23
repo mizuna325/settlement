@@ -8,8 +8,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.slf4j.MDC.MDCCloseable;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import com.example.settlement.payment.adapter.out.gateway.PspClient;
@@ -35,7 +33,6 @@ import io.micrometer.tracing.Tracer;
  * DBコネクションを占有しないため。
  */
 @Component
-@ConditionalOnProperty(name = "settlement.psp.dispatch.enabled", matchIfMissing = true)
 class PspDispatchRelay {
 
     private static final Logger log = LoggerFactory.getLogger(PspDispatchRelay.class);
@@ -54,13 +51,14 @@ class PspDispatchRelay {
     }
 
     /**
-     * REQ-NFR-001: 走査の間隔は設定値から注入する。
+     * 1周ぶんの走査。起動の契機は持たない({@link PspDispatchScheduler} が与える)。
      *
      * <p>
-     * fixedDelay は「前回の完了から次回の開始まで」の間隔。fixedRate と違い、
-     * 1周が長引いても次の周が重ならない。
+     * 並行して呼ばれても二重送信にはならない。確保が
+     * {@code FOR UPDATE SKIP LOCKED} で排他され、結果の記録も
+     * {@code status='SENDING'} を条件に含めるため(design.md §5.1)。
+     * ただし同じ行を奪い合えば警告が出るので、意図して並行させる場面は無い。
      */
-    @Scheduled(fixedDelayString = "${settlement.psp.dispatch.polling-interval}")
     void relay() {
         // ① 確保(トランザクション1)
         List<PspDispatchEventEntity> claimed = pspDispatchStore.claim(

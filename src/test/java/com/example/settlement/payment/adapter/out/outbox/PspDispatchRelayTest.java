@@ -42,14 +42,16 @@ import ch.qos.logback.core.read.ListAppender;
  *
  * <p>
  * Relay の走査は止めたまま relay() を直接呼ぶ。@Scheduled が裏で回ると、
- * 用意した行をテスト本体より先に拾って非決定的になる。ただし enabled=false では
- * Bean 自体が生成されない(@ConditionalOnProperty)ので、enabled=true にしたうえで
- * polling-interval を十分長くする。fixedDelay は初回を即座に実行するが、
- * それはコンテキスト起動時であり、行を用意する前なので何も拾わない。
+ * 用意した行をテスト本体より先に拾って非決定的になる。
+ *
+ * <p>
+ * enabled=false で消えるのは PspDispatchScheduler だけで、Relay のBeanは残る。
+ * 以前は Relay 自体が @ConditionalOnProperty を持っていたため enabled=true に
+ * するしかなく、polling-interval を1hにしてもスケジューラの<strong>初回実行</strong>が
+ * コンテキスト起動直後に走ってテストと競合していた(design.md §9.1)。
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT, properties = {
-        "settlement.psp.dispatch.enabled=true",
-        "settlement.psp.dispatch.polling-interval=1h" })
+        "settlement.psp.dispatch.enabled=false" })
 class PspDispatchRelayTest {
 
     /** 固定の8080だと開発中のアプリと衝突するため、空きポートを取ってから起動する。 */

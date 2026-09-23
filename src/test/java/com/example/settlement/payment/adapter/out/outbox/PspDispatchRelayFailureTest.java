@@ -33,8 +33,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  */
 @SpringBootTest(properties = {
         "settlement.psp.base-url=http://localhost:1",
-        "settlement.psp.dispatch.enabled=true",
-        "settlement.psp.dispatch.polling-interval=1h",
+        // 走査は relay() を直接呼ぶ。enabled=false で消えるのは
+        // PspDispatchScheduler だけなので、Relay のBeanは注入できる(design.md §9.1)。
+        "settlement.psp.dispatch.enabled=false",
         "settlement.psp.dispatch.backoff-base=0s",
         "settlement.psp.dispatch.max-attempts=3" })
 class PspDispatchRelayFailureTest {
