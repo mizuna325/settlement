@@ -745,12 +745,12 @@ PspWebhookController ─────────────────┐ 同�
 
 ### 8.3 段階
 
-| | アプリ | エクスポーター | 送出先 | 追加コンテナ |
-|---|---|---|---|---|
-| 第1段階 | OTel SDK | なし | spanは捨てられ、IDだけがログに残る | 0 |
-| 第2段階 | OTel SDK | OTLP | Jaeger | 1 |
+| | アプリ | エクスポーター | 送出先 | 追加コンテナ | 状態 |
+|---|---|---|---|---|---|
+| 第1段階 | OTel SDK | なし | spanは捨てられ、IDだけがログに残る | 0 | **実装済み** |
+| 第2段階 | OTel SDK | OTLP | Jaeger | 1 | 未着手 |
 
-**どちらも OpenTelemetry である。** 違いは送出先だけで、伝搬形式・コード・永続化する値はすべて共通。第1段階から第2段階への移行は依存1つとプロパティ1行の追加で済み、コードは変わらない。
+**どちらも OpenTelemetry である。** 違いは送出先だけで、伝搬形式・コード・永続化する値はすべて共通。第1段階から第2段階への移行は `spring-boot-starter-opentelemetry` への差し替えとプロパティの追加で済み、アプリケーションのコードは変わらない。
 
 ログはSpring Bootの構造化ログ機能でJSONにする(`logging.structured.format.console=ecs`)。MDCの内容が各行のフィールドとして出るため、追加の依存は要らない。
 
@@ -785,6 +785,22 @@ Relayが数秒後に行を拾って送信するとき、元のトレースの続
 **MDCを必ず消す。** Tomcatのワーカーもスケジューラのスレッドもプールされるため、消し忘れると次の無関係な処理に前のIDが付く。**IDが無いことより、誤ったIDが付いていることの方が有害**で、トレースが自信を持って嘘をつく状態になる。
 
 Relayは**1バッチではなく1行ごと**に出し入れする。10件確保したら10回である。
+
+### 8.7 実装して分かったこと
+
+図の上では繋がって見える箇所が、依存の選び方ひとつで切れる。以下はいずれも計測して判明したもので、コンパイルも起動も通るため気付きにくい。
+
+**Spring Boot 4 では自動設定がモジュールごとに分かれている。** `micrometer-tracing-bridge-otel` を入れただけではMDCが空のままだった。`spring-boot-actuator-autoconfigure` にトレース関連の自動設定は含まれておらず、`spring-boot-micrometer-tracing-opentelemetry` が別途必要になる。
+
+なお `spring-boot-starter-opentelemetry` はOTLPエクスポーターまで含むため第1段階では使わない。送出先が無い状態では接続エラーが出続ける。
+
+**`RestClient.builder()` を自前で呼ぶと伝搬が切れる。** 観測機能が組み込まれていない素のビルダーになり、`traceparent` ヘッダが付かない。注入される `RestClient.Builder`(`spring-boot-restclient` の `RestClientAutoConfiguration` が供給)を使う必要がある。このBeanは `prototype` スコープなので、`PspClient` と `WebhookDispatcher` がそれぞれ `baseUrl` を設定しても干渉しない。
+
+**OTelブリッジでは `TraceContext#parentId()` が null を返す。** OpenTelemetryの `SpanContext` は traceId / spanId / flags / state しか持たず、親のspanIdを保持しない。親子関係はspan生成時に確立され、エクスポート時の `SpanData` には現れるが、実行中のAPIからは読めない。Brave では一級のフィールドなので値が返る。ファサードのAPIが両実装の和集合になっていることによる差。
+
+**関係が失われているわけではない**ため、Jaegerへ送れば入れ子として表示される。テストでは traceId の一致と spanId の相違で継続性を確認している。
+
+**トレースの検証はログよりデータで行う方が確実だった。** 当初は最終段のログに載る traceId を見ようとしたが、`HandlePspWebhookService` は `NOT_APPLICABLE` のときしかログを出さず、正常系では観測できなかった。Outbox の行に記録された `traceparent` を比較する形にすると、タイミングにも依存しない。
 
 ---
 
