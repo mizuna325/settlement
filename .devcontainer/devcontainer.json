@@ -6,9 +6,12 @@
   "remoteUser": "vscode",
   //Stop DB container after disconnect VsCode.
   "shutdownAction": "stopCompose",
+  // 素の番号は app コンテナのポートを指す。別サービスのポートは "サービス名:番号" で書く。
+  // 8080 は app の中で spring boot が listen するのでそのまま。
   "forwardPorts": [
     8080,
-    5432
+    "db:5432",
+    "jaeger:16686"
   ],
   "portsAttributes": {
     "8080": {
@@ -16,6 +19,9 @@
     },
     "5432": {
       "label": "postgres"
+    },
+    "16686": {
+      "label": "jaeger ui"
     }
   },
   "postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.claude /home/vscode/.m2 && ./mvnw -B dependency:go-offline",

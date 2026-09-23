@@ -769,8 +769,12 @@ PspWebhookController ─────────────────┐ 同�
 
 ```properties
 # application.properties
-management.opentelemetry.tracing.export.otlp.endpoint=http://jaeger:4318/v1/traces
+management.opentelemetry.tracing.export.otlp.endpoint=${OTLP_ENDPOINT:http://jaeger:4318/v1/traces}
 ```
+
+**送出先の綴りは実行場所で変わる。** 既定値をサービス名 `jaeger` にしているのは、アプリが devcontainer の `app` コンテナの中で動くため。compose の `ports:` はホストへの公開であって兄弟コンテナには効かないので、コンテナの中から `localhost:4318` では届かない。DBを `jdbc:postgresql://db:5432` で引いているのと同じ事情になる。ホスト側で直接起動する場合は逆になるため、`OTLP_ENDPOINT` で差し替える。
+
+このプロパティに既定値は無い(`OtlpTracingConfigurations$ConnectionDetails` が `@ConditionalOnProperty` で `endpoint` を見ている)。未設定だとエクスポーターのBeanが作られず、**無言で送出されない**。
 
 当初は `spring-boot-starter-opentelemetry` への差し替えを想定していたが、**採らなかった**。あの starter は `spring-boot-starter-micrometer-metrics` と `micrometer-registry-otlp` まで引き込む。メトリクスを使っていない現状では余分な依存になる。必要なのはエクスポーターの成果物1つで、プロパティ(`management.opentelemetry.tracing.*`)は既に入っている `spring-boot-micrometer-tracing-opentelemetry` が定義している。
 
@@ -786,8 +790,13 @@ management.opentelemetry.tracing.export.otlp.endpoint=http://jaeger:4318/v1/trac
 
 #### 動かして見る
 
+**devcontainer の中で動かす場合**(既定)。コンテナに `docker` コマンドは入っていないため、`docker compose up` は使わない。compose の起動は devcontainer 自身が行う。
+
+1. VS Code で「Reopen in Container」。`devcontainer.json` の `dockerComposeFile` により、
+   `app` と、その `depends_on` にある `db` / `jaeger` がまとめて起動する
+2. コンテナ内のターミナルで起動する
+
 ```bash
-docker compose up -d
 ./mvnw spring-boot:run
 
 curl -X POST localhost:8080/orders \
@@ -796,7 +805,14 @@ curl -X POST localhost:8080/orders \
        "lines":[{"productId":"SKU-1","quantity":1,"amount":1000,"currency":"JPY"}]}'
 ```
 
-`http://localhost:16686` を開き、サービス `settlement` のトレースを選ぶ。**1注文が1本のトレースになっており、その中に §8.1 の4つの非同期境界がすべて入れ子で現れる**。Outbox を経由する箇所(境界①)と `TaskScheduler` の遅延送信(境界③)は、IDをデータとして持ち回らなければ切れていた箇所で、ここが繋がって見えることが第1段階からの成果にあたる。
+**ホスト側で動かす場合**。この場合だけ送出先の綴りが変わる。
+
+```bash
+docker compose up -d
+OTLP_ENDPOINT=http://localhost:4318/v1/traces ./mvnw spring-boot:run
+```
+
+どちらの場合も、ホストのブラウザで `http://localhost:16686` を開き、サービス `settlement` のトレースを選ぶ。**1注文が1本のトレースになっており、その中に §8.1 の4つの非同期境界がすべて入れ子で現れる**。Outbox を経由する箇所(境界①)と `TaskScheduler` の遅延送信(境界③)は、IDをデータとして持ち回らなければ切れていた箇所で、ここが繋がって見えることが第1段階からの成果にあたる。
 
 同じ traceId が構造化ログの各行にも載っているため、ログとトレースは `traceId` で突き合わせられる。Jaeger 自体はログを持たないので、相関は手作業になる。自動で飛べる形にするなら Loki と Grafana が要るが、コンテナが3つ増えるため本演習では採らない。
 
@@ -931,11 +947,34 @@ order と payment は将来の分割を前提に分けている(§1)。片方に
 
 #### フォーマット
 
-`logging.structured.format.console=ecs`。1行1JSON。自動で入るのは `@timestamp` / `log.level` / `log.logger` / `message` / `process.pid` / `process.thread.name` / `service.name` / `ecs.version`、`Throwable` を渡した場合の `error.type` / `error.message` / `error.stack_trace`。MDCとkey-valueはいずれもトップレベルに平坦に出る。
+`logging.structured.format.console=ecs`。1行1JSON。実際の出力は次の形になる(整形は説明用で、実際は1行)。
+
+```json
+{
+  "@timestamp": "2026-09-23T13:15:56.984737677Z",
+  "log":     { "level": "INFO", "logger": "com.example.settlement...SettleOrderService" },
+  "process": { "pid": 4734, "thread": { "name": "http-nio-8080-exec-2" } },
+  "service": { "name": "settlement", "node": {} },
+  "message": "売上が確定したため注文を完了した",
+  "traceId": "274e8d0a5709f384843d9a527f9fa05d",
+  "spanId":  "1d87233c7f6d6b48",
+  "orderId":     "3f2a...",
+  "paymentId":   "78c1...",
+  "orderStatus": "SETTLED",
+  "attempts": 3,
+  "ecs": { "version": "8.11" }
+}
+```
+
+**フレームワークが付けるフィールドはネストしたオブジェクトになる。** ECSの綴りは `log.level` のようにドットで書かれるが、JSON上は `log` オブジェクトの下の `level` であって、`"log.level"` というキーではない。`Throwable` を渡すと同じ形で `error` オブジェクト(`type` / `message` / `stack_trace`)が増える。
+
+**MDCと `addKeyValue` の値だけがトップレベルに平坦に出る。** 両者は出力上は区別されないため、どちらの仕組みで入れたかはJSONを見ても分からない。使い分けはスコープのためだけにある。
 
 - キーは **lowerCamelCase**。既存の `traceId` / `spanId` に揃える
-- ECSの予約名前空間を先頭に使わない(`log` `process` `service` `error` `event` `ecs` `message` `tags` `trace` `span` `http` `url` `user`)
-- 値は文字列か数値で渡す。`Instant` や列挙子は `toString()` / `name()` で明示的に変換する
+- **ECSの予約名前空間を先頭に使わない**(`log` `process` `service` `error` `event` `ecs` `message` `tags` `trace` `span` `http` `url` `user`)。
+  平坦に出る以上、`log` という名前のMDCキーはネストした `log` オブジェクトと衝突する
+- 値は文字列か数値で渡す。数値はJSONの数値のまま出る(上の `attempts` は `3` であって `"3"` ではない)。
+  `Instant` や列挙子は `toString()` / `name()` で明示的に変換する
 - IDは素の値を渡す。値オブジェクトをそのまま渡すと `PaymentId[paymentId=...]` と出る
 
 **出してはならないもの**: リクエスト/レスポンス本文の丸ごと出力(量とPII)、署名とシークレット、`e.getMessage()` をメッセージ本文へ連結すること(`error.message` と二重になる)。
@@ -944,7 +983,7 @@ order と payment は将来の分割を前提に分けている(§1)。片方に
 
 #### ECS正準との差
 
-MicrometerがMDCへ入れるキーは `traceId` / `spanId` であり、ECS正準の `trace.id` / `span.id` ではない。`management.tracing.*` に改名用のプロパティは存在しない。Elasticへ投入しないかぎり実害がないため、このまま受け入れる。
+MicrometerがMDCへ入れるキーは `traceId` / `spanId` であり、ECS正準の `trace.id` / `span.id` ではない。MDCの値はトップレベルに平坦に出るため、`trace` オブジェクトの下に入ることもない。`management.tracing.*` に改名用のプロパティは存在しない。Elasticへ投入しないかぎり実害がないため、このまま受け入れる。
 
 #### テストでの扱い
 
