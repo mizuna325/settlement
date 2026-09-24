@@ -403,16 +403,26 @@ graph TB
 ヘキサゴナルアーキテクチャで、各コンテキストを `domain` / `application` / `adapter` の3層に分ける。`adapter` は駆動する側(`in`)と依頼される側(`out`)に分ける。
 
 ---
-## 踏んだ落とし穴を残してある
+## 不安定なテストの原因を突き止める
 
-動いた記録ではなく、**調査の記録**を残している。いずれもコンパイルも起動も通るため、計測しないと気付けなかったもの。
+全体実行でだけ2件のテストが落ちた。単独実行では通る。
 
-- Spring Boot 4 は自動設定がモジュールごとに分割されており、ブリッジだけ入れてもMDCが空のまま
-- `RestClient.builder()` を自前で呼ぶと観測機能が入らず、HTTP境界でトレースが切れる
-- `@Scheduled(fixedDelay)` は**初回をコンテキスト起動直後に実行する**。間隔を1時間にしてもその1回は走り、テストと競合する
-- 開発用アプリを起動したままテストを流すと、アプリ側のRelayがテストのOutbox行を横取りする。フレークに見えるが再現性がある
+```
+PspDispatchRelayTest.staleSendingRowIsReclaimed       expected: SENT  but was: SENDING
+WebhookDispatcherTest.authorizedResultReachesTheReceiver  expected: 1  but was: 2
+```
 
-→ [design.md §8.7](./docs/design.md), [§9.1](./docs/design.md)
+**フレーキーテスト**（コードを変えていないのに通ったり落ちたりするテスト）の典型的な症状で、最初はそう判断した。
+
+しかし**4回連続で同じ箇所が落ちた**。確率的にばらつかない以上、再現性がある。原因は2つあった。
+
+**1. 開発中のアプリがテストと同じDBを見ていた。** `./mvnw spring-boot:run` を起動したままにしていると、アプリ側の `PspDispatchRelay` が1秒ごとに `payment_psp_dispatch_events` を走査し、**テストが作った行を確保して実際にPSPへ送っていた**。テスト用DBを分離して解消した。
+
+**2. `@Scheduled(fixedDelay)` は初回をコンテキスト起動直後に実行する。** 間隔を1時間にしてもその1回は必ず走り、テスト本体と競合する。コードのコメントは「起動時の1回は行を用意する前なので何も拾わない」と逆のことを主張していた。起動の契機を `PspDispatchScheduler` として Relay から切り離し、テストからは自動起動を止めて直接呼ぶ形にした。
+
+どちらも**テストのコードを読んでも理由が分からない**種類の問題である。「落ちたら再実行」で済ませていれば、この2つは残ったままだった。
+
+→ [design.md §9.1](./docs/design.md)（分離の方法）, [§8.7](./docs/design.md)（可観測性の実装で踏んだもの）
 
 ---
 
