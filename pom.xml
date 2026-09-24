@@ -13,13 +13,6 @@
 	<version>0.0.1-SNAPSHOT</version>
 	<name>settlement</name>
 	<description>注文から決済までを扱う演習用アプリケーション。外部PSPとの非同期なやり取りを、二重決済を起こさずに捌くことを主題にしている。</description>
-	<licenses>
-		<license>
-			<name>MIT License</name>
-			<url>https://opensource.org/licenses/MIT</url>
-			<distribution>repo</distribution>
-		</license>
-	</licenses>
 	<properties>
 		<java.version>21</java.version>
 		<archunit.version>1.5.0</archunit.version>
