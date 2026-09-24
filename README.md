@@ -151,15 +151,38 @@ log.atInfo()                                  // 本文は固定文字列。同�
 
 ### 結果
 
+`POST /orders` を1回投げた結果。**11個のspanが1本に繋がっている。**
+
+![1注文分の処理が1本のトレースになっている様子](docs/images/trace.png)
+
+段ごとに、前掲の境界と対応している。
+
+```
+http post /orders                     ← 起点
+└ psp-dispatch                        ← 境界① Outbox の行から traceparent を復元
+  └ http post                         ← 境界② Relay → PSP
+    └ http post /psp/authorize
+      └ http post                     ← 境界③ 遅延送信(ContextSnapshot)
+        └ http post /payment/webhook  ← 境界④
+          └ psp-dispatch              ← ここから2周目(売上確定)
+            └ ... /psp/capture ... /payment/webhook
+```
+
+見るべき点は2つある。
+
+**`psp-dispatch` が `/orders` の子になっていること。** Relay は別スレッド・後の時刻で動くので、スレッドローカルでは繋がらない。行に永続化した `traceparent` を復元して初めてこの親子関係になる。ここが切れていると、Relay 以降が**別トレースの新しい root** として記録される。
+
+**時間軸の空白。** `/psp/authorize` が終わってから次のspanが始まるまでに1秒以上空いている。これが遅延送信(境界③)で、全体 7.57秒のほとんどは待ち時間である。処理が重いのではなく、**非同期であることがそのまま見えている**。
+
+> `Services 1` はPSPシミュレータを同一プロセスに置いているため。伝搬形式が W3C Trace Context なので、実PSPに差し替えてサービスが分かれてもそのまま繋がる。
+>
+> パスの付かない `http post` はクライアント側のspan。Springがカーディナリティを抑えるためURIをspan名に含めない規約による。直後の子(サーバ側)が行き先を示している。
+
 正常な1注文で **INFO 7行、すべて同一 `traceId`**。`message` で事象を絞り、`traceId` で1注文を束ね、`paymentId` で特定の決済を追い、`orderStatus` で種類を分ける。
 
 トレースは Jaeger へ OTLP で送出する。**アプリのコードは1行も変えず**、エクスポーターの依存とプロパティ1行だけで切り替わる。
 
 → [design.md §8](./docs/design.md)
-
-<!-- ここに Jaeger のスクリーンショットを置くと伝わりやすくなります。
-     docker compose up -d して POST /orders した後、http://localhost:16686 のトレース画面。
-     例: ![1注文が1本のトレースになっている様子](docs/images/trace.png) -->
 
 ---
 
@@ -277,7 +300,7 @@ curl -X POST localhost:8080/orders \
 curl localhost:8080/orders/{orderId}
 ```
 
-トレースは `http://localhost:16686`(Jaeger)。サービス `settlement` を選ぶと、1注文が1本のトレースとして、4つの非同期境界を含んだ入れ子で表示される。
+トレースは `http://localhost:16686`(Jaeger)。サービス `settlement` を選ぶと、[上に載せた図](#結果)と同じものが出る。1注文が1本のトレースとして、4つの非同期境界を含んだ入れ子で表示される。
 
 > コンテナ内に `docker` コマンドは無いので、`docker compose up` は使わない。compose の起動は devcontainer 自身が行う。
 
