@@ -380,3 +380,13 @@ OTLP_ENDPOINT=http://localhost:4318/v1/traces ./mvnw spring-boot:run
 - **デプロイ** — 本番環境が無いため、CIはテストの実行までで止まる
 - **メトリクスとSLO** — Outboxの滞留件数やWebhookの応答時間は可観測性の自然な続きだが、未着手
 - **OpenTelemetry Collector** — 本番運用しないため、tail sampling もPIIマスクもバックエンド切り替えも発生しない([design.md §8.4](./docs/design.md))
+
+---
+
+## ライセンス
+
+[MIT License](./LICENSE)
+
+**学習目的の成果物であり、本番運用は想定していない。** 外部PSPはシミュレータで代替しており、実在の決済サービスとの接続も、実運用に必要な監査・保全・鍵管理も含まない。
+
+MIT は利用を広く許可すると同時に、**無保証であること、および作者がいかなる責任も負わないこと**を定めている(LICENSE 後半)。参考にする場合はその前提で扱うこと。
