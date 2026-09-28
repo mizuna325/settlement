@@ -727,13 +727,23 @@ PspDispatchRelay(@Scheduled・別スレッド・後の時刻)
   PspClient → HTTP ─────────────────── ② ヘッダで運ぶ
 FakePspController
   WebhookDispatcher(TaskScheduler・1〜5秒後) ─ ③ 予約時に捕まえる
-  → HTTP ──────────────────────────── ④ ペイロードで運ぶ
+  → HTTP ──────────────────────────── ④ ヘッダで運ぶ(※)
 PspWebhookController ─────────────────┐ 同一スレッド
   HandlePspWebhookService             │
   PaymentOutcomeAdapter → order       │
 ```
 
 **MDCだけでは足りない。** MDCはThreadLocalなので①〜④を越えない。①と③はHTTPですらないため、ライブラリによる自動伝搬も効かない。**IDをデータとして持ち回る実装が必要**であり、これはどの方式を選んでも変わらない。
+
+#### ※ ④が繋がるのはシミュレータだからである
+
+**④だけは送信側がこちらではない。** ②はこちらがクライアントなのでヘッダを制御できるが、④のクライアントはPSPにあたる。
+
+現在ヘッダで繋がっているのは、`WebhookDispatcher` が同一サービス内にあり、観測機能付きの `RestClient` を使っているためにすぎない。**本物のPSPが `traceparent` を付ける理由は無い。** 別組織のシステムであり、こちらのトレースを運ぶ義務も動機もない。実PSPへ差し替えれば、Webhook受信以降は別トレースの新しい root になる。
+
+対処は①と同じ形になる。Webhookの本文には `paymentId` が入っており、`traceparent` は `payment_psp_dispatch_events` に永続化してある。受信時にその行を引けば、ヘッダに頼らず元のトレースへ繋ぎ直せる。**伝送路が運んでくれないなら自分のデータから復元する**という点で、①と同じ考え方である。
+
+ただし決済1件に対しディスパッチは複数ある(AUTHORIZE / CAPTURE / REFUND)ため、どの行の `traceparent` を使うかは通知の `status` から決める必要がある。実装していないのは現時点で必要が無いためで、**実PSPへ差し替える際の作業として記録しておく**。
 
 ### 8.2 W3C Trace Context を採用する
 
