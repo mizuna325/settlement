@@ -285,19 +285,19 @@ graph TB
       PA --> PD["domain<br/>Payment(集約)"]
       PA --> PO["adapter.out.outbox"]
     end
-    OA -- "① 直接呼び出し(同一Tx)" --> PA
-    PA -- "② PaymentOutcomePort(同一Tx)" --> OE
-    PO -- "③ @Scheduled" --> RELAY["PspDispatchRelay"]
+    OA -- "A 直接呼び出し(同一Tx)" --> PA
+    PA -- "B PaymentOutcomePort(同一Tx)" --> OE
+    PO -- "C @Scheduled" --> RELAY["PspDispatchRelay"]
   end
   OD -. import .-> SH["shared<br/>Money / Currency"]
   PD -. import .-> SH
   PO --> DB[("PostgreSQL")]
-  RELAY -- "④ HTTP + Idempotency-Key" --> PSP[["PSPシミュレータ"]]
+  RELAY -- "D HTTP + Idempotency-Key" --> PSP[["PSPシミュレータ"]]
   PSP -- "202 Accepted(即時)" --> RELAY
-  PSP -- "⑤ Webhook(遅延・署名付き)" --> PW
+  PSP -- "E Webhook(遅延・署名付き)" --> PW
 ```
 
-①②は自社ドメイン内なのでローカルトランザクション。**③④⑤だけが本物の非同期・分散処理**になる。この線引きが設計の核にあたる。
+A と B は自社ドメイン内なのでローカルトランザクション。**C・D・E だけが本物の非同期・分散処理**になる。この線引きが設計の核にあたる。
 
 ヘキサゴナルアーキテクチャで、各コンテキストを `domain` / `application` / `adapter` の3層に分ける。`adapter` は駆動する側(`in`)と依頼される側(`out`)に分ける。
 
@@ -333,8 +333,8 @@ Relay は**1バッチではなく1行ごと**にトレースを出し入れす�
 Webhookの本文には `paymentId` が入っており、`traceparent` は Outbox の行に永続化してある。受信時にその行を引けば、ヘッダに頼らず元のトレースへ繋ぎ直せる。**伝送路が運んでくれないなら、自分のデータから復元する**という点で①と同じ考え方になる。
 
 ```
-① Relay:   行の traceparent を読んで復元        ← 実装済み
-④ Webhook: paymentId で行を引いて traceparent を復元  ← 未実装(シミュレータでは不要)
+① Relay:   行の traceparent を読んで復元               ← 実装済み
+④ Webhook: paymentId で行を引いて traceparent を復元   ← 未実装(シミュレータでは不要)
 ```
 
 実装していないのは、現時点では必要が無いためである。**実PSPへ差し替える際に必要になる作業として記録しておく。**
@@ -359,11 +359,12 @@ log.atInfo()                                  // 本文は固定文字列。同�
 
 ![1注文分の処理が1本のトレースになっている様子](docs/images/trace.png)
 
-見るべきは **`psp-dispatch` が `/orders` の子になっていること**である。Relay は別スレッド・後の時刻で動くので、スレッドローカルでは繋がらない。行に永続化した `traceparent` を復元して初めてこの親子関係になる。ここが切れていれば、Relay 以降は**別トレースの新しい root** として記録される。
+見るべきは **`psp-dispatch` が `/orders` の子になっていること**である。Relay は別インスタンス・後の時刻で動きうるので、スレッドローカルでは繋がらない。行に永続化した `traceparent` を復元して初めてこの親子関係になる。ここが切れていれば、Relay 以降は**別トレースの新しい root** として記録される。
 
 時間軸の空白は遅延送信(境界③)で、全体 7.57秒のほとんどは待ち時間である。処理が重いのではなく、**非同期であることがそのまま見えている**。
 
 → [design.md §8](./docs/design.md)（伝搬形式の選定、ログ出力基準、送出先の構成）
+
 ---
 
 ## 不安定なテストの原因を突き止める
@@ -483,7 +484,7 @@ OTLP_ENDPOINT=http://localhost:4318/v1/traces ./mvnw spring-boot:run
 | 壊れ方 | テスト |
 | --- | --- |
 | 落ちた行が放置される | `REQ-NFR-009: claimTimeout を過ぎた SENDING の行は回収する` |
-| 無限に再試行する | `REQ-PSP-004: 試行上限を超えたディスパッチは FAILED になり以降拾われない` |
+| 無限に再試行する | `REQ-PSP-004 / REQ-NFR-002: 試行上限を超えたディスパッチは FAILED になり以降拾われない` |
 | 通知が重複する | `REQ-PSP-006: 同じ eventId の再送では状態が二重に進まない` |
 | 順序が入れ替わる | `REQ-PSP-007: 適用できない通知は 200 を返し、WARN を残す` |
 | 偽の通知が届く | `REQ-PSP-005: 署名が不正なら 401 を返し、いかなる状態変更も行わない` |

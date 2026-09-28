@@ -942,7 +942,7 @@ order と payment は将来の分割を前提に分けている(§1)。片方に
 
 `FailOrderSettlementService` だけ WARN にする。`SETTLEMENT_FAILED` は自動で解消しない終端で人手の対応が要るため(REQ-ORD-005)。ERROR にしないのは、システムの障害ではなくPSPが返した業務上の結果であるため。
 
-**payment 側のログと隣接する**点は承知のうえで受け入れる。`HandlePspWebhookService` の「通知を適用した」と `SettleOrderService` の「注文を完了した」は、同じ出来事を別のコンテキストが別の語彙で記録したものであり、二重出力ではない。1注文あたりのINFOは7行程度になる。
+**payment 側のログと隣接する**点は承知のうえで受け入れる。`HandlePspWebhookService` の「通知を適用した」と `SettleOrderService` の「注文を完了した」は、同じ出来事を別のコンテキストが別の語彙で記録したものであり、二重出力ではない。1注文あたりのINFOは、`order` と `payment` を合わせて7行になる(PSPシミュレータが出す2行を加えると、実際のログでは9行)。
 
 `CreateOrderService` のログは、Relayが動いていない場合に注文が存在したことすらログに残らない状態を防ぐ意味もある。`customerId` は顧客の識別子なので載せない。返金要求の `reason` も顧客の自由入力なので載せない(必要なら `payment_refunds` から引ける)。
 
