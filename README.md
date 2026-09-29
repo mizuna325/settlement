@@ -8,9 +8,41 @@ Java 21 / Spring Boot 4.1 / PostgreSQL 17 / Spring Data JDBC。
 POST /orders → 与信 → 売上確定 → SETTLED
 ```
 
-この1行の裏で、処理は**4回スレッドをまたぎ、2回HTTPの境界を越え、外部からの通知を2回受け取る**。
+利用者から見れば1行だが、**裏では同じ形のサイクルが3周する**。与信・売上確定・返金で、通る経路は同じになる。
 
-つまり「落ちる」「重複する」「順序が入れ替わる」が**例外ではなく前提**になる。いずれもこちらからは制御できない。そのうえで金額が二重に動かないこと、そして何が起きたか後から追えるトレーサビリティを、テストで示している。
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as クライアント
+    participant O as order
+    participant P as payment
+    participant DB as Outbox<br/>(テーブル)
+    participant R as Relay
+    participant PSP as 外部PSP
+
+    C->>O: POST /orders
+    activate O
+    Note over O,P: 同一トランザクション<br/>落ちれば注文ごと無かったことになる
+    O->>P: 与信を開始
+    P->>DB: AUTHORIZE を積む
+    O-->>C: 201 orderId
+    deactivate O
+
+    Note over DB,R: ① 別インスタンス・別時刻<br/>スレッドも接続も共有しない
+    R->>DB: 行を確保(SKIP LOCKED)
+    R->>PSP: ② 与信を依頼(Idempotency-Key 付き)
+    PSP-->>R: 202 Accepted
+    Note over PSP: ③ 1〜5秒後に結果が出る
+    PSP->>P: ④ Webhook(署名付き)
+    P->>O: 結果を反映 → CONFIRMED
+    P->>DB: CAPTURE を積む
+
+    Note over DB,PSP: 2周目(売上確定) → SETTLED<br/>返金があれば3周目
+```
+
+**`POST /orders` が返った時点では、まだ何も確定していない。** 結果は数秒後に Webhook で届く。①〜④が**処理が分断される4つの境界**で、本書ではこの番号で参照する。
+
+この構造から、**「落ちる」「重複する」「順序が入れ替わる」が例外ではなく前提**になる。いずれもこちらからは制御できない。そのうえで金額が二重に動かないこと、そして何が起きたか後から追えるトレーサビリティを、テストで示している。
 
 ---
 
@@ -308,7 +340,9 @@ A と B は自社ドメイン内なのでローカルトランザクション。
 
 ### どこが切れるかは構成が決める
 
-同期的なモノリスなら1本のスタックトレースで足りる。この構成はそうではない。**境界の性質が違うので、越え方も違う。**
+同期的なモノリスなら1本のスタックトレースで足りる。この構成はそうではない。冒頭の図で示した4つの境界で処理が分断される。
+
+**境界の性質が違うので、越え方も違う。**
 
 | 境界 | 性質 | 越え方 | 誰が送る側か |
 | --- | --- | --- | --- |
@@ -391,25 +425,19 @@ WebhookDispatcherTest.authorizedResultReachesTheReceiver  expected: 1  but was: 
 
 ## 決済の流れ
 
-```
-POST /orders
-  └─ Order を PENDING で保存 ─┐ 同一トランザクション
-     Payment を AUTHORIZING で保存、Outbox に AUTHORIZE を積む ─┘
+冒頭の図の1周が、状態としてはこう進む。**3周とも同じ経路を通る。**
 
-  (@Scheduled 1秒ごと)
-  Relay が行を確保 → PSPへ与信を依頼 → 202
-  1〜5秒後、PSPが署名付き Webhook を送る
-     └─ 署名検証 → eventId で重複排除 → Payment を AUTHORIZED へ
-        └─ 同一トランザクションで売上確定を開始、Outbox に CAPTURE を積む
-           └─ Order を CONFIRMED へ
+| 周 | 起点 | `Payment` | `Order` |
+| --- | --- | --- | --- |
+| 1周目 | `POST /orders` | `AUTHORIZING` → `AUTHORIZED` | `PENDING` → `CONFIRMED` |
+| 2周目 | 1周目の Webhook が自動で起動 | `CAPTURING` → `CAPTURED` | → `SETTLED` |
+| 3周目 | `POST /orders/{id}/refunds` | `REFUNDING` → `PARTIALLY_REFUNDED` / `REFUNDED` | → `PARTIALLY_REFUNDED` / `REFUNDED` |
 
-  (2周目)
-  Relay → PSP → Webhook → Payment CAPTURED → Order SETTLED
-```
+3周目の行き先は**売上確定額に達したか**で決まる。達していなければ `PARTIALLY_REFUNDED` に留まり、そこから何度でも返金を積める。
 
-`POST /orders` から先は人手を介さない。返金は `POST /orders/{id}/refunds` が起点で、同じ経路を3周目として通る。
+**`POST /orders` から先は人手を介さない。** 与信の成功がそのまま売上確定を起動するため、1周目と2周目は連続して進む(REQ-PAY-004)。返金だけは人手が起点になる。
 
-分岐は金額の下2桁で決まる(再現性のため乱数にしていない)。
+失敗した場合の行き先は金額の下2桁で決まる(再現性のため乱数にしていない)。
 
 | 金額 | 結果 |
 | --- | --- |
