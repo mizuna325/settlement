@@ -73,26 +73,9 @@ POST /orders → 与信 → 売上確定 → SETTLED
 | 同じ集約を並行して更新する | 更新が失われる | **楽観ロック(`@Version`)** |
 | 偽の通知が届く | 任意の決済を操作される | **HMAC-SHA256の署名検証**。比較は `MessageDigest.isEqual`(不一致位置で打ち切らない)、署名は5分の許容時間付きで**再送攻撃の窓を閉じる** |
 
-### 不変条件は集約の中だけに置く
+金額の上限（与信額を超えて確定しない、売上確定額を超えて返金しない、有効期限切れの与信は使えない）は、すべて `Payment` 集約が拒否する。
 
-呼び出し側の検査に依存しない。**呼び出し側が忘れても自衛できる場所**に条件を置く(REQ-PAY-012)。
-
-```java
-// Payment#capture
-if (amount.isGreaterThan(authorization.getAmount())) → 拒否   // REQ-PAY-005 与信額を超えられない
-if (now.isAfter(authorization.getExpiresAt()))        → 拒否   // REQ-PAY-006 与信には期限がある
-if (capture != null && capture.isPending())           → 拒否   // REQ-PAY-010 二重ディスパッチの防止
-
-// Payment#requestRefund
-売上確定が完了していなければ拒否                                // REQ-PAY-007 受け取っていない金銭は戻せない
-確定済み + 処理中の返金累計が売上確定額を超えたら拒否            // REQ-PAY-008
-```
-
-返金累計は**確定済みのみ**と**確定済み+処理中**の2種類を使い分ける。超過判定には処理中も数えないと、結果待ちの間にもう一度返金を通せてしまう。
-
-照会APIが返す金額も同じ思想で、依頼額ではなく**確定した額**を返す。結果待ちや失敗のときに依頼額を見せると、押さえられていない額を押さえたように読める。
-
-→ [design.md §5.1](./docs/design.md)（Outbox）, [§3](./docs/design.md)（不変条件の置き場所）
+→ [design.md §5.1](./docs/design.md)（Outbox）, [§3](./docs/design.md)（集約の構造と不変条件）
 
 ---
 
