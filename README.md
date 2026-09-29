@@ -8,7 +8,7 @@ Java 21 / Spring Boot 4.1 / PostgreSQL 17 / Spring Data JDBC。
 POST /orders → 与信 → 売上確定 → SETTLED
 ```
 
-利用者から見れば1行だが、**裏では同じ形のサイクルが3周する**。与信・売上確定・返金で、通る経路は同じになる。
+利用者から見れば1行だが、**裏では同じ形のサイクルが2周する**。与信と売上確定で、通る経路は同じになる。
 
 ```mermaid
 sequenceDiagram
@@ -37,13 +37,15 @@ sequenceDiagram
     P->>O: 結果を反映 → CONFIRMED
     P->>DB: CAPTURE を積む
 
-    Note over DB,PSP: 2周目(売上確定) → SETTLED<br/>返金があれば3周目
+    Note over DB,PSP: 2周目(売上確定)も同じ経路を通る → SETTLED
 
     C->>O: GET /orders/{orderId}
     O-->>C: SETTLED
 ```
 
 **`POST /orders` が返った時点では、まだ何も確定していない。** 結果は数秒後に Webhook で届き、クライアントは照会APIで取りに来る。①〜④が**処理が分断される4つの境界**で、本書ではこの番号で参照する。
+
+返金も同じ経路を通るが、**起点は別**になる。`POST /orders/{orderId}/refunds` が明示的に叩かれたときだけ走る([決済の流れ](#決済の流れ))。
 
 この構造から、**「落ちる」「重複する」「順序が入れ替わる」が例外ではなく前提**になる。いずれもこちらからは制御できない。そのうえで金額が二重に動かないこと、そして何が起きたか後から追えるトレーサビリティを、テストで示している。
 
@@ -428,7 +430,7 @@ WebhookDispatcherTest.authorizedResultReachesTheReceiver  expected: 1  but was: 
 
 ## 決済の流れ
 
-冒頭の図の1周が、状態としてはこう進む。**3周とも同じ経路を通る。**
+冒頭の図の1周が、状態としてはこう進む。**3周とも同じ経路を通るが、起点は2種類しかない。**
 
 | 周 | 起点 | `Payment` | `Order` |
 | --- | --- | --- | --- |
