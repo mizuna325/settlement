@@ -1,5 +1,5 @@
 {
-  "name": "demo (spring boot + claude code)",
+  "name": "settlement (spring boot + postgres + jaeger)",
   "dockerComposeFile": "../compose.yaml",
   "service": "app",
   "workspaceFolder": "/workspace",

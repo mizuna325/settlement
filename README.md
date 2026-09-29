@@ -445,6 +445,20 @@ curl localhost:8080/orders/{orderId}
 
 > コンテナ内に `docker` コマンドは無いので、`docker compose up` は使わない。compose の起動は devcontainer 自身が行う。
 
+#### 開発環境に含めているもの
+
+この devcontainer は **Claude Code を使う前提**で構成してある。アプリケーションの動作には一切関与しないが、clone した人には不要なはずなので明記しておく。
+
+| 場所 | 内容 |
+| --- | --- |
+| `Dockerfile` | **イメージのビルド時に CLI をインストールする**(`claude.ai` からスクリプトを取得して実行)。`ripgrep` もそのための依存 |
+| `compose.yaml` | 設定と認証情報を名前付きボリューム `claude-config` に保存する |
+| `devcontainer.json` | 拡張機能 `anthropic.claude-code` を自動インストールする。`postCreateCommand` の `chown` はこのボリュームが対象 |
+
+**不要なら削除して構わない。** アプリ・テスト・CI のいずれにも影響しない。ただし `chown` はボリュームと連動しており、存在しないパスへの `chown` は失敗して後続の `dependency:go-offline` まで止まるため、**両方をまとめて消す**必要がある。
+
+実装には Claude Code を併用している。**注文の受け付けから与信までは手で書き**、**売上確定と返金**から先は生成と修正を往復させた。
+
 ### ホスト側で動かす場合
 
 ```bash
