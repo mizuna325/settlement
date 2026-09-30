@@ -41,7 +41,7 @@ class RequestRefundService implements RequestRefundUseCase {
             log.atInfo()
                     .addKeyValue("amount", amount.amount())
                     .addKeyValue("currency", amount.unit().name())
-                    .log("返金要求を受け付け、決済コンテキストへ引き渡した");
+                    .log("accepted the refund request and handed it to the payment context");
 
             refundPaymentUseCase.refund(
                     new com.example.settlement.payment.domain.OrderId(orderId.orderId()),

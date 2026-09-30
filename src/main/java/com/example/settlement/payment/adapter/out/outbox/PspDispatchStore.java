@@ -120,7 +120,7 @@ class PspDispatchStore {
                         .addKeyValue("paymentId", row.event().paymentId().toString())
                         .addKeyValue("attempts", row.event().attempts())
                         .addKeyValue("previousClaimedAt", String.valueOf(row.previousClaimedAt()))
-                        .log("確保したまま取り残されたディスパッチを回収した"));
+                        .log("reclaimed a dispatch left behind while claimed"));
 
         return claimed.stream().map(ClaimedRow::event).toList();
     }
@@ -208,7 +208,7 @@ class PspDispatchStore {
             log.atWarn()
                     .addKeyValue("dispatchEventId", dispatchEventId.toString())
                     .addKeyValue("targetStatus", status.name())
-                    .log("確保していないディスパッチの状態を更新しようとした");
+                    .log("tried to update the status of a dispatch that is not claimed");
         }
     }
 

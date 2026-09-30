@@ -1,6 +1,6 @@
 # settlement
 
-注文から決済までを扱う演習用アプリケーション。**業務のモデリングと、分散システムの安全性を設計する**ことを主題にしている。
+注文から決済までを扱う演習用アプリケーション。**業務のモデリングと分散システムの安全性を設計する**ことを主題にしている。
 
 Java 21 / Spring Boot 4.1 / PostgreSQL 17 / Spring Data JDBC。
 
@@ -24,7 +24,7 @@ sequenceDiagram
     activate O
     Note over O,P: 同一トランザクション<br/>落ちれば注文ごと無かったことになる
     O->>P: 与信を開始
-    P->>DB: AUTHORIZE を積む
+    P->>DB: 与信の依頼を積む
     O-->>C: 201 orderId
     deactivate O
 
@@ -35,7 +35,7 @@ sequenceDiagram
     Note over PSP: ③ 1〜5秒後に結果が出る
     PSP->>P: ④ Webhook(署名付き)
     P->>O: 結果を反映 → CONFIRMED
-    P->>DB: CAPTURE を積む
+    P->>DB: 売上確定の依頼を積む
 
     Note over DB,PSP: 2周目(売上確定)も同じ経路を通る → SETTLED
 
@@ -80,7 +80,7 @@ sequenceDiagram
 
 ## 見どころ
 
-一貫しているのは「**業務のモデリングと、分散システムの安全性を設計すること**」という点になる。どちらも、動くものを作るだけなら要らない設計である。
+一貫しているのは「**業務のモデリングと分散システムの安全性を設計すること**」という点になる。どちらも、動くものを作るだけなら要らない設計である。
 
 | | |
 | --- | --- |
@@ -303,27 +303,35 @@ Maven のマルチモジュールに分ければ、依存を `pom.xml` に宣言
 graph TB
   subgraph APP["settlement (単一サービス)"]
     subgraph OC["order"]
-      OW["adapter.in.web<br/>OrderController"] --> OA["application"]
-      OA --> OD["domain<br/>Order"]
-      OE["adapter.in.eventing<br/>PaymentOutcomeAdapter"] --> OA
+      OCTL["OrderController"] --> COS["CreateOrderService"]
+      POA["PaymentOutcomeAdapter<br/>(PaymentOutcomePort の実装)"] --> CFS["ConfirmOrderService"]
+      POA --> SOS["SettleOrderService"]
     end
     subgraph PC["payment"]
-      PW["adapter.in.webhook<br/>PspWebhookController"] --> PA["application"]
-      PQ["adapter.in.web<br/>PaymentController"] --> PA
-      PA --> PD["domain<br/>Payment(集約)"]
-      PA --> PO["adapter.out.outbox"]
+      APS["AuthorizePaymentService"] --> QA["PspDispatchQueueAdapter"]
+      PWC["PspWebhookController"] --> HWS["HandlePspWebhookService"]
+      HWS --> CPS["CapturePaymentService"]
+      CPS --> QA
+      SCH["PspDispatchScheduler"] --> RELAY["PspDispatchRelay"]
+      RELAY --> STORE["PspDispatchStore"]
+      RELAY --> CLIENT["PspClient"]
     end
-    OA -- "A 直接呼び出し(同一Tx)" --> PA
-    PA -- "B PaymentOutcomePort(同一Tx)" --> OE
-    PO -- "C @Scheduled" --> RELAY["PspDispatchRelay"]
+    COS -- "A 直接呼び出し(同一Tx)" --> APS
+    HWS -- "B PaymentOutcomePort 経由(同一Tx)" --> POA
   end
-  OD -. import .-> SH["shared<br/>Money / Currency"]
-  PD -. import .-> SH
-  PO --> DB[("PostgreSQL")]
-  RELAY -- "D HTTP + Idempotency-Key" --> PSP[["PSPシミュレータ"]]
-  PSP -- "202 Accepted(即時)" --> RELAY
-  PSP -- "E Webhook(遅延・署名付き)" --> PW
+  DB[("payment_psp_dispatch_events")]
+  QA -- "行を積む" --> DB
+  STORE -- "C 別スレッド・別時刻に確保<br/>(SKIP LOCKED)" --> DB
+  subgraph SIM["pspsimulator(外部PSPの代役)"]
+    FPC["FakePspController"] --> WD["WebhookDispatcher"]
+  end
+  CLIENT -- "D HTTP + Idempotency-Key" --> FPC
+  WD -- "E Webhook(遅延・署名付き)" --> PWC
 ```
+
+**矢印は呼び出しの向き**を表す。ポート(インタフェース)を経由する呼び出しも、実装クラスへ直接つないでいる。与信と売上確定の経路だけを描き、返金・照会・永続化は省いた。
+
+B の呼び出しは payment → order だが、**コード上の依存は逆向き**になる。`PaymentOutcomePort` は payment 側に置かれ、order 側の `PaymentOutcomeAdapter` がそれを実装している。payment は order を知らない。
 
 A と B は自社ドメイン内なのでローカルトランザクション。**C・D・E だけが本物の非同期・分散処理**になる。この線引きが設計の核にあたる。
 
@@ -384,9 +392,9 @@ Webhookの本文には `paymentId` が入っており、`traceparent` は Outbox
 1行の構成は**スコープ**で分ける。
 
 ```java
-log.atInfo()                                  // 本文は固定文字列。同じ事象を数えられる
-   .addKeyValue("orderStatus", "SETTLED")     // その行だけの値
-   .log("売上が確定したため注文を完了した");     // orderId / paymentId は MDC(処理全体に載る)
+log.atInfo()                                                // 本文は固定文字列。同じ事象を数えられる
+   .addKeyValue("orderStatus", "SETTLED")                   // その行だけの値
+   .log("settled the order because the capture completed"); // orderId / paymentId は MDC(処理全体に載る)
 ```
 
 **`order` と `payment` の両方でログを出す。** 分割を前提にしている以上、片方にしかログが無い状態は同一サービスで動くあいだだけ問題に見えないだけで、分割した瞬間に片方が無音のサービスになる。

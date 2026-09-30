@@ -956,8 +956,10 @@ order と payment は将来の分割を前提に分けている(§1)。片方に
 
 | | 本文 | フィールド |
 | --- | --- | --- |
-| 事由が事象の種類そのもの | 「試行上限に達したため送信を打ち切った」 | — |
-| 事由が可変 | 「現在の状態に適用できない通知を受信した」 | `reason`、`error.message` |
+| 事由が事象の種類そのもの | `gave up sending because the attempt limit was reached` | — |
+| 事由が可変 | `received a notification that cannot be applied to the current status` | `reason`、`error.message` |
+
+**本文は英語で書く。** ログを読むのは人だけではなく、grep・集計・検索の対象になる。日本語だと環境によって文字化けや正規化の差が出るうえ、`message` で事象を数える用途と相性が悪い。例外メッセージも同じ理由で英語に揃える(`error.message` としてログに出るため)。コード中のコメントは読み手が実装者に限られるので日本語のままとする。
 
 #### フォーマット
 
@@ -969,7 +971,7 @@ order と payment は将来の分割を前提に分けている(§1)。片方に
   "log":     { "level": "INFO", "logger": "com.example.settlement...SettleOrderService" },
   "process": { "pid": 4734, "thread": { "name": "http-nio-8080-exec-2" } },
   "service": { "name": "settlement", "node": {} },
-  "message": "売上が確定したため注文を完了した",
+  "message": "settled the order because the capture completed",
   "traceId": "274e8d0a5709f384843d9a527f9fa05d",
   "spanId":  "1d87233c7f6d6b48",
   "orderId":     "3f2a...",

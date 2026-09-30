@@ -30,6 +30,6 @@ class ConfirmOrderService implements ConfirmOrderUseCase {
         // orderId はMDCに載っている(PaymentOutcomeAdapter)。遷移後の状態だけを足す。
         log.atInfo()
                 .addKeyValue("orderStatus", order.getOrderStatus().name())
-                .log("与信が成立したため注文を確定した");
+                .log("confirmed the order because the authorization succeeded");
     }
 }

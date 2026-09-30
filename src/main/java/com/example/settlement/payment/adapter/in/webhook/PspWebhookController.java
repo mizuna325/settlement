@@ -120,7 +120,7 @@ class PspWebhookController {
             return HexFormat.of().formatHex(mac.doFinal(payload.getBytes(UTF_8)));
         } catch (java.security.GeneralSecurityException e) {
             // シークレットの設定ミス。リクエストごとに変わるものではないため起動時の不備に等しい。
-            throw new IllegalStateException("Webhookの署名を計算できない", e);
+            throw new IllegalStateException("cannot compute the webhook signature", e);
         }
     }
 }

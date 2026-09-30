@@ -33,6 +33,6 @@ class RefundOrderService implements RefundOrderUseCase {
         log.atInfo()
                 .addKeyValue("fullyRefunded", fullyRefunded)
                 .addKeyValue("orderStatus", order.getOrderStatus().name())
-                .log("返金が成立したため注文の状態を更新した");
+                .log("updated the order status because the refund completed");
     }
 }

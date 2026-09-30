@@ -30,6 +30,6 @@ class SettleOrderService implements SettleOrderUseCase {
         // 注文の終着点。ここまで来れば人手の介在は不要だったことになる。
         log.atInfo()
                 .addKeyValue("orderStatus", order.getOrderStatus().name())
-                .log("売上が確定したため注文を完了した");
+                .log("settled the order because the capture completed");
     }
 }

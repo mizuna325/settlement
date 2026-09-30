@@ -84,7 +84,7 @@ class PspDispatchRelay {
                         .addKeyValue("amount", event.amount())
                         .addKeyValue("currency", event.currency())
                         .addKeyValue("attempts", event.attempts())
-                        .log("PSPへ送信し、受理された");
+                        .log("sent to the PSP and it was accepted");
                 // ③ 結果記録(トランザクション2)
                 pspDispatchStore.markSent(event.dispatchEventId());
             } catch (RuntimeException e) {
@@ -134,7 +134,7 @@ class PspDispatchRelay {
             log.atError().setCause(cause)
                     .addKeyValue("attempts", event.attempts())
                     .addKeyValue("maxAttempts", properties.maxAttempts())
-                    .log("試行上限に達したため送信を打ち切った");
+                    .log("gave up sending because the attempt limit was reached");
         } else {
             Instant nextAttemptAt = Instant.now().plus(backoff(event.attempts()));
             pspDispatchStore.scheduleRetry(event.dispatchEventId(), nextAttemptAt);
@@ -142,7 +142,7 @@ class PspDispatchRelay {
                     .addKeyValue("attempts", event.attempts())
                     .addKeyValue("maxAttempts", properties.maxAttempts())
                     .addKeyValue("nextAttemptAt", nextAttemptAt.toString())
-                    .log("PSPへの送信に失敗した。再送を予約した");
+                    .log("failed to send to the PSP and scheduled a retry");
         }
     }
 

@@ -46,7 +46,7 @@ class CreateOrderService implements CreateOrderUseCase {
                     .addKeyValue("amount", savedOrder.getTotalAmount().amount())
                     .addKeyValue("currency", savedOrder.getTotalAmount().unit().name())
                     .addKeyValue("lineCount", orderLines.size())
-                    .log("注文を受け付け、与信を開始した");
+                    .log("accepted the order and started authorization");
 
             authorizePaymentUseCase.authorize(
                     new com.example.settlement.payment.domain.OrderId(savedOrder.getOrderId().orderId()),

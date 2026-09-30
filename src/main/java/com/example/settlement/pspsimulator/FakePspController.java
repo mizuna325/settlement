@@ -47,7 +47,7 @@ class FakePspController {
             log.atInfo()
                     .addKeyValue("amount", request.amount())
                     .addKeyValue("currency", request.currency())
-                    .log("与信要求を受け付けた");
+                    .log("accepted an authorization request");
             webhookDispatcher.dispatchAuthorizationResult(request.paymentId(), request.amount());
             return ResponseEntity.accepted().build();
         }
@@ -68,7 +68,7 @@ class FakePspController {
             log.atInfo()
                     .addKeyValue("amount", request.amount())
                     .addKeyValue("currency", request.currency())
-                    .log("売上確定要求を受け付けた");
+                    .log("accepted a capture request");
             webhookDispatcher.dispatchCaptureResult(request.paymentId(), request.amount());
             return ResponseEntity.accepted().build();
         }
@@ -89,7 +89,7 @@ class FakePspController {
             log.atInfo()
                     .addKeyValue("amount", request.amount())
                     .addKeyValue("currency", request.currency())
-                    .log("返金要求を受け付けた");
+                    .log("accepted a refund request");
             webhookDispatcher.dispatchRefundResult(request.paymentId(), request.amount());
             return ResponseEntity.accepted().build();
         }
@@ -101,7 +101,7 @@ class FakePspController {
             return false;
         }
         // キーは呼び出し元がMDCへ置いている(dispatchEventId)。ここでは足さない。
-        log.info("受付済みの冪等性キーのため処理しない");
+        log.info("skipped processing because the idempotency key was already accepted");
         return true;
     }
 

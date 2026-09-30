@@ -29,6 +29,6 @@ class CancelOrderService implements CancelOrderUseCase {
         orderRepository.save(order);
         log.atInfo()
                 .addKeyValue("orderStatus", order.getOrderStatus().name())
-                .log("与信が拒否されたため注文を取り消した");
+                .log("cancelled the order because the authorization was declined");
     }
 }

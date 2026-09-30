@@ -139,7 +139,7 @@ class WebhookDispatcher {
             // スケジューラは Runnable が投げた例外を握り潰すため、ここで記録しないと無言で消える。
             log.atWarn().setCause(e)
                     .addKeyValue("paymentId", paymentId.toString())
-                    .log("Webhookの送信に失敗した");
+                    .log("failed to send the webhook");
             return false;
         }
     }
@@ -157,7 +157,7 @@ class WebhookDispatcher {
             return HexFormat.of().formatHex(mac.doFinal(payload.getBytes(UTF_8)));
         } catch (java.security.GeneralSecurityException e) {
             // シークレットの設定ミス。リクエストごとに変わるものではないため起動時の不備に等しい。
-            throw new IllegalStateException("Webhookの署名を計算できない", e);
+            throw new IllegalStateException("cannot compute the webhook signature", e);
         }
     }
 }

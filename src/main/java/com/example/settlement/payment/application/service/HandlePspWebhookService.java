@@ -63,7 +63,7 @@ class HandlePspWebhookService implements HandlePspWebhookUseCase {
             // eventId と paymentId はMDCに載っている(PspWebhookController)。ここでは足さない。
             log.atWarn()
                     .addKeyValue("status", notification.status().name())
-                    .log("通知された決済が存在しない");
+                    .log("the notified payment does not exist");
             return WebhookOutcome.NOT_APPLICABLE;
         }
         Payment payment = found.get();
@@ -116,7 +116,7 @@ class HandlePspWebhookService implements HandlePspWebhookUseCase {
                     .addKeyValue("status", notification.status().name())
                     .addKeyValue("paymentStatus", payment.getPaymentStatus().name())
                     .addKeyValue("orderId", payment.getOrderId().orderId().toString())
-                    .log("PSPの通知を決済へ適用した");
+                    .log("applied the PSP notification to the payment");
             return WebhookOutcome.APPLIED;
         } catch (IllegalStateException e) {
             // 到達順序は保証されないため、現在の状態に適用できない通知は異常ではない(REQ-PSP-007)。
@@ -126,7 +126,7 @@ class HandlePspWebhookService implements HandlePspWebhookUseCase {
                     .addKeyValue("status", notification.status().name())
                     .addKeyValue("paymentStatus", payment.getPaymentStatus().name())
                     .addKeyValue("reason", e.getMessage())
-                    .log("現在の状態に適用できない通知を受信した");
+                    .log("received a notification that cannot be applied to the current status");
             return WebhookOutcome.NOT_APPLICABLE;
         }
     }

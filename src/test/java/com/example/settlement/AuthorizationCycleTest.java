@@ -328,19 +328,19 @@ class AuthorizationCycleTest {
 
         ILoggingEvent applyLog = applied.get(0);
         // 本文は固定。値が混ざると同じ事象を数えられなくなる。
-        assertEquals("PSPの通知を決済へ適用した", applyLog.getMessage());
+        assertEquals("applied the PSP notification to the payment", applyLog.getMessage());
         assertEquals(orderId.toString(), keyValueOf(applyLog, "orderId"));
         assertNotNull(applyLog.getMDCPropertyMap().get("eventId"), "eventId がMDCに載っていない");
 
         ILoggingEvent sendLog = sent.get(0);
-        assertEquals("PSPへ送信し、受理された", sendLog.getMessage());
+        assertEquals("sent to the PSP and it was accepted", sendLog.getMessage());
         assertEquals("AUTHORIZE", keyValueOf(sendLog, "operation"));
         assertNotNull(sendLog.getMDCPropertyMap().get("dispatchEventId"),
                 "dispatchEventId がMDCに載っていない");
 
         // order 側の終端。状態はフィールドで出るため、本文に埋め込まれていない。
         ILoggingEvent settleLog = settled.get(0);
-        assertEquals("売上が確定したため注文を完了した", settleLog.getMessage());
+        assertEquals("settled the order because the capture completed", settleLog.getMessage());
         assertEquals("SETTLED", keyValueOf(settleLog, "orderStatus"));
         // order の遷移は決済の通知から駆動される。payment 側のIDも同じ行に載っている。
         assertEquals(paymentId.toString(), settleLog.getMDCPropertyMap().get("paymentId"));

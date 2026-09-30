@@ -32,6 +32,6 @@ class FailOrderSettlementService implements FailOrderSettlementUseCase {
         // システムの障害ではなくPSPが返した業務上の結果であるため。
         log.atWarn()
                 .addKeyValue("orderStatus", order.getOrderStatus().name())
-                .log("売上確定に失敗したため注文を要対応にした");
+                .log("flagged the order for manual handling because the capture failed");
     }
 }
