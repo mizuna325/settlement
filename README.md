@@ -17,7 +17,7 @@ sequenceDiagram
     participant O as order
     participant P as payment
     participant DB as Outbox<br/>(テーブル)
-    participant R as Relay
+    participant R as Relay<br/>(定期バッチ)
     participant PSP as 外部PSP
 
     C->>O: POST /orders
@@ -29,9 +29,11 @@ sequenceDiagram
     deactivate O
 
     Note over DB,R: ① 別インスタンス・別時刻<br/>スレッドも接続も共有しない
-    R->>DB: 行を確保(SKIP LOCKED)
-    R->>PSP: ② 与信を依頼(Idempotency-Key 付き)
-    PSP-->>R: 202 Accepted
+    loop 1秒ごとのバッチ(@Scheduled)
+        R->>DB: 未送信の行を走査し、最大10件を確保(SKIP LOCKED)
+        R->>PSP: ② 1行ずつ与信を依頼(Idempotency-Key 付き)
+        PSP-->>R: 202 Accepted
+    end
     Note over PSP: ③ 1〜5秒後に結果が出る
     PSP->>P: ④ Webhook(署名付き)
     P->>O: 結果を反映 → CONFIRMED
